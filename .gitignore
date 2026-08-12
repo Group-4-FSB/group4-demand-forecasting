@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.Python
+build/
+dist/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Env files
+.env
+
+# Data (large / raw Kaggle files — never commit)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+*.csv
+!tests/fixtures/*.csv
+
+# MLflow
+mlruns/
+mlartifacts/
+mlflow.db
+
+# Models
+models/*.pkl
+models/*.txt
+!models/.gitkeep
+
+# Generated reports (regenerate via scripts/run_pipeline.py)
+reports/*
+!reports/.gitkeep
+
+# Coverage / test artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+coverage.xml
+tests/.test_artifacts/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
