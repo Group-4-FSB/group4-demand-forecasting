@@ -162,7 +162,7 @@ full schema.
 | **Deployment** | FastAPI (`/api/v1/predict`, `/api/v1/predict/batch`, `/health`, auto Swagger at `/docs`), multi-stage non-root Dockerfile, 4-service `docker-compose.yml` (API, MLflow, Prometheus, Grafana) |
 | **Monitoring** | Auto HTTP metrics + custom ML metrics (prediction count/latency/value distribution, model version) via `prometheus-fastapi-instrumentator`; provisioned Grafana dashboard; 5 Prometheus alert rules |
 | **Testing & CI/CD** | 85+ tests across unit / integration / data-quality / model-validation (`tests/`), 97% coverage, GitHub Actions pipeline (lint → test → Docker build) |
-| **Responsible AI** | Store-segment fairness/disparity analysis (flagged a real 2.2x per-store disparity — see docs), SHAP + native gain-importance explainability, privacy & ethics discussion — [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) |
+| **Responsible AI** | Store-segment fairness/disparity analysis (flagged a real ~1.9x per-store disparity — see docs), SHAP + native gain-importance explainability, privacy & ethics discussion — [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) |
 | **Docs** | This README, [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [docs/PROBLEM_DEFINITION.md](docs/PROBLEM_DEFINITION.md), [docs/USER_GUIDE.md](docs/USER_GUIDE.md), OpenAPI/Swagger at `/docs` |
 
 ## Project structure

@@ -112,9 +112,13 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
 
 1. Run `python scripts/run_pipeline.py` again (locally, or with
    `MLFLOW_TRACKING_URI` pointed at the running `mlflow` container as above).
-   Each run logs a baseline + several tuned LightGBM candidates, and the best
-   one is registered and aliased `production` in the model registry —
-   automatically replacing the previous alias target.
+   Each run: holds out the most recent `TEST_HOLDOUT_WEEKS` (default 8) weeks,
+   picks the best LightGBM hyperparameters via CV on everything before that,
+   scores them once on the held-out weeks for an honest `test_rmsle`, then
+   refits on 100% of the data — that final model is what gets registered and
+   aliased `production`, automatically replacing the previous alias target.
+   See [README.md § Train / CV / Test split](../README.md#train--cv--test-split)
+   for the full walkthrough, and pass `--test-weeks N` to change the holdout size.
 2. **Restart the API container** so it picks up the newly-aliased model:
    `docker compose restart api` (the service loads the model once at
    startup — see the trade-offs note in ARCHITECTURE.md; a hot-reload

@@ -84,7 +84,8 @@ full ML-system lifecycle end to end.
 | **System** | API availability | ≥ 99% during grading/demo window (tracked via Prometheus `up`) |
 | **System** | API latency | p95 < 500ms per prediction (Grafana panel + alert rule) |
 | **System** | Test coverage | ≥ 80% (enforced in CI via `--cov-fail-under=80`) |
-| **Model** | RMSLE (primary) | Beat the naive previous-week-persistence baseline, tracked in MLflow — achieved: **baseline 0.122 → tuned LightGBM 0.090** (~26% improvement) on the full dataset |
+| **Model** | RMSLE on a chronological held-out test set (primary) | Beat the naive previous-week-persistence baseline **on the same held-out weeks**, tracked in MLflow — achieved: **baseline 0.072 → held-out test RMSLE 0.043** (~40% improvement), on 8 weeks the model never trained on (see [README.md § Train / CV / Test split](../README.md#train--cv--test-split) for the full methodology) |
+| **Model** | CV RMSLE (secondary, used only to pick hyperparameters) | 0.090, measured via 3-fold rolling-origin CV on the training pool |
 | **Model** | MAE / RMSE | Tracked per training run for interpretability alongside RMSLE |
 
 ## 4. Scope & constraints

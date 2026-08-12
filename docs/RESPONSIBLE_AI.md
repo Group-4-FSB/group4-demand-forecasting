@@ -44,17 +44,20 @@ after running `python scripts/run_pipeline.py`):
 
 | Segment | Disparity ratio | Flagged? |
 |---|---|---|
-| `store_size_bucket` | 1.06 | No |
-| `unemployment_bucket` | 1.24 | No |
-| `store_nbr` (per-store) | **2.22** | **⚠️ Yes** |
+| `store_size_bucket` | 1.11 | No |
+| `unemployment_bucket` | 1.22 | No |
+| `store_nbr` (per-store) | **1.93** | **⚠️ Yes** |
 
 The coarse buckets look fine, but the per-store breakdown is not: individual
-stores (e.g. store 18) have roughly **2.2x** the RMSLE of the best-served
-store, even though they fall in the same size/unemployment bucket as
-better-served stores. This means the coarse segments hide real, store-level
-disparity — exactly the kind of finding this analysis exists to surface, and
-a genuine limitation of a single global model at this dataset's scale (~143
-weeks/store).
+stores (e.g. store 18, consistently the worst-served across retraining runs)
+have roughly **1.9-2.2x** the RMSLE of the best-served store, even though
+they fall in the same size/unemployment bucket as better-served stores. This
+means the coarse segments hide real, store-level disparity — exactly the
+kind of finding this analysis exists to surface, and a genuine limitation of
+a single global model at this dataset's scale (~143 weeks/store). (Exact
+ratios shift slightly between retraining runs — re-check
+`reports/fairness_report.md` after each run; store 18 has shown up as the
+worst-served store across multiple runs so far.)
 
 **Mitigation strategies:**
 - Add store-specific features (e.g. a store-level historical volatility
@@ -123,7 +126,7 @@ are logged as MLflow artifacts on the final run.
   treat large predicted swings as a prompt to double-check, not blind ground
   truth.
 - **Fairness-related labor impact.** The model systematically under-serves
-  certain individual stores (disparity ratio 2.22, §1) — that store's staff
+  certain individual stores (disparity ratio ~1.9x, §1) — that store's staff
   bear more manual correction workload than staff at better-served stores,
   an equity concern addressed by the fairness monitoring above, not just an
   accuracy one.

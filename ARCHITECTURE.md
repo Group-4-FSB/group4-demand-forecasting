@@ -16,7 +16,7 @@ flowchart LR
         RAW[("Walmart_Sales.csv\ndata/raw")] --> INGEST["Ingest & Normalize\ndata/ingest.py"]
         INGEST --> VALIDATE["Data Validation\ndata/validate.py"]
         VALIDATE --> FEAT["Feature Engineering\ndata/features.py"]
-        FEAT --> TRAIN["Train + CV +\nHyperparam Search\nmodels/train.py"]
+        FEAT --> TRAIN["Train + CV +\nHyperparam Search +\nHeld-out Test Eval\nmodels/train.py"]
         FEAT --> SNAP["Reference Snapshot\ndata/processed"]
         TRAIN --> REPORT["Responsible AI Report\nSHAP + Fairness\nreporting.py"]
     end
@@ -46,7 +46,7 @@ flowchart LR
 | **Ingestion** | Load the raw CSV, rename/type columns, sort into a clean weekly panel | [`src/demand_forecast/data/ingest.py`](src/demand_forecast/data/ingest.py) |
 | **Validation** | Schema, null, range, duplicate, and panel-balance checks; fails the pipeline loudly on violation | [`src/demand_forecast/data/validate.py`](src/demand_forecast/data/validate.py) |
 | **Feature engineering** | Calendar features, lag/rolling sales features, rule-based holiday-week detection — applied identically at train and serve time | [`src/demand_forecast/data/features.py`](src/demand_forecast/data/features.py) |
-| **Training** | Baseline model, LightGBM + time-series CV + hyperparameter search, MLflow logging & registry promotion | [`src/demand_forecast/models/train.py`](src/demand_forecast/models/train.py) |
+| **Training** | Baseline model, LightGBM + time-series CV + hyperparameter search, a chronological held-out test evaluation, MLflow logging & registry promotion | [`src/demand_forecast/models/train.py`](src/demand_forecast/models/train.py) |
 | **Responsible AI reporting** | SHAP + native feature importance, per-segment fairness disparity report | [`src/demand_forecast/explainability/`](src/demand_forecast/explainability/), [`src/demand_forecast/fairness/`](src/demand_forecast/fairness/), [`reporting.py`](src/demand_forecast/reporting.py) |
 | **Serving** | Loads the registered model + reference snapshot, exposes REST endpoints, emits ML-specific metrics | [`src/demand_forecast/api/`](src/demand_forecast/api/) |
 | **Experiment tracking / registry** | Single source of truth for runs, metrics, and the currently-serving model version (via alias `production`) | MLflow service (`Dockerfile.mlflow`) |
@@ -61,12 +61,21 @@ flowchart TD
     M --> V{validate_sales_table}
     V -- fail --> X[["raise DataValidationError\n(pipeline stops)"]]
     V -- pass --> F[build_features]
-    F --> S[select_model_columns]
-    S --> T[LightGBM: baseline vs tuned CV runs]
-    T --> BEST[Best run → registered + aliased 'production']
+    F --> SPLIT{chronological_holdout_split}
+    SPLIT -->|pool: all but last N weeks| POOL[Rolling-origin CV\nhyperparameter search]
+    SPLIT -->|test: last N weeks, set aside| TESTWEEKS[held-out test weeks]
+    POOL --> BESTPARAMS[best hyperparameters]
+    BESTPARAMS -->|fit on pool only| EVALMODEL[eval model]
+    TESTWEEKS -->|score once, never trained on| EVALMODEL
+    EVALMODEL --> TESTMETRIC[test_rmsle\nhonest, never-trained-on number]
+    BESTPARAMS -->|refit on pool + test\n= 100% of data| FINAL[final model]
+    FINAL --> BEST[registered → aliased 'production']
     F --> SNAP[build_reference_snapshot\nlatest lag/rolling + economic indicators per store]
-    T --> RAI[generate_responsible_ai_report]
+    FINAL --> RAI[generate_responsible_ai_report]
 ```
+
+See [README.md § Train / CV / Test split](README.md#train--cv--test-split)
+for the full walkthrough with real dates and real numbers from the last run.
 
 **At serving time**, a request `(store_nbr, date)` is turned into a feature
 row by combining: (a) the store's most recent lag/rolling sales values and
@@ -95,6 +104,7 @@ deliberate simplification.
 | Decision | Trade-off | Why it's the right call here |
 |---|---|---|
 | **One global model** (not per-store models) | Slightly lower ceiling accuracy than 45 specialized models | Vastly simpler to train, register, monitor, and reason about; `store_nbr` as a categorical feature lets LightGBM learn store-specific patterns anyway — and with only ~143 weeks/store, per-store models would have very little data each |
+| **Final model refit on 100% of data** (including the held-out test weeks) after the honest test score is recorded | The registered model's accuracy is never independently re-verified after this refit — we trust that adding 8 more recent weeks doesn't change behavior much | For a time series, the most recent weeks are the most informative for next-week forecasts; discarding them from the deployed model just to keep a permanent holdout would hurt real-world accuracy for a course-scope one-time evaluation |
 | **Snapshot-based serving features** (lag/rolling values and economic indicators frozen at last training date) instead of live feeds | Forecast quality for lag features and economic indicators slowly goes stale between retrains; the caller can override any of them if they have a better estimate | Avoids standing up a streaming feature store / live economic-data feed for a course-scope project; documented retraining cadence (§ USER_GUIDE) mitigates staleness |
 | **Rule-based holiday-week detection** (Super Bowl/Labor Day/Thanksgiving/Christmas via standard US scheduling rules) instead of a holiday-calendar file | An approximation, not an official calendar; caller can override via `holiday_flag` | The dataset ships no holiday-calendar file; the rule was verified to reproduce all 10 `holiday_flag=1` weeks actually present in the source data exactly (see `tests/unit/test_features.py`), and generalizes to any future year without a new data dependency |
 | **SQLite MLflow backend** instead of Postgres | Lower write-concurrency ceiling | Single-team, low-concurrency training workload; SQLite still gives the full registry + tracking feature set with zero extra services |
