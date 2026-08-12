@@ -4,27 +4,37 @@ from __future__ import annotations
 
 from datetime import date as date_type
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class PredictRequest(BaseModel):
-    store_nbr: int = Field(..., ge=1, description="Store number, as in stores.csv")
-    family: str = Field(..., min_length=1, description="Product family, e.g. 'GROCERY I'")
-    date: date_type = Field(..., description="Date to forecast sales for (YYYY-MM-DD)")
-    onpromotion: int = Field(0, ge=0, description="Number of items of this family on promotion")
-
-    @field_validator("family")
-    @classmethod
-    def uppercase_family(cls, v: str) -> str:
-        return v.strip().upper()
+    store_nbr: int = Field(..., ge=1, le=45, description="Walmart store number (1-45)")
+    date: date_type = Field(..., description="Week-ending Friday to forecast sales for")
+    holiday_flag: int | None = Field(
+        None,
+        ge=0,
+        le=1,
+        description="1 if this week includes a major holiday (Super Bowl/Labor Day/"
+        "Thanksgiving/Christmas). Auto-detected from the date if omitted.",
+    )
+    temperature: float | None = Field(
+        None, description="Avg regional temperature (°F). Defaults to the store's last known value."
+    )
+    fuel_price: float | None = Field(
+        None, ge=0, description="Regional fuel price (USD/gallon). Defaults to last known value."
+    )
+    cpi: float | None = Field(
+        None, gt=0, description="Consumer Price Index. Defaults to last known value."
+    )
+    unemployment: float | None = Field(
+        None, ge=0, description="Regional unemployment rate (%). Defaults to last known value."
+    )
 
     model_config = {
         "json_schema_extra": {
             "example": {
                 "store_nbr": 1,
-                "family": "GROCERY I",
-                "date": "2017-08-20",
-                "onpromotion": 5,
+                "date": "2012-12-21",
             }
         }
     }
@@ -34,7 +44,6 @@ class PredictResponse(BaseModel):
     model_config = {"protected_namespaces": ()}
 
     store_nbr: int
-    family: str
     date: date_type
     predicted_sales: float
     model_name: str

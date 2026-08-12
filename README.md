@@ -1,25 +1,58 @@
 # Demand Forecast — DDM501 Final Project
 
-> End-to-end ML system that forecasts daily unit sales per (store, product
-> family) for Corporación Favorita (Ecuador), from raw data to a monitored
-> production API. Built for DDM501 — *AI in Production: From Models to
-> Systems*.
+> End-to-end ML system that forecasts weekly sales per Walmart store, from
+> raw data to a monitored production API. Built for DDM501 — *AI in
+> Production: From Models to Systems*.
 
 <!-- Replace <YOUR_GH_ORG>/<YOUR_GH_REPO> once pushed to GitHub -->
 ![CI](https://github.com/<YOUR_GH_ORG>/<YOUR_GH_REPO>/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-3.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Coverage](https://img.shields.io/badge/coverage-%E2%89%A596%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-%E2%89%A597%25-brightgreen)
 
 ## What this is
 
-Predicts next-period unit sales for each (store, product family) combination
-using the Kaggle ["Store Sales - Time Series
-Forecasting"](https://www.kaggle.com/competitions/store-sales-time-series-forecasting)
-dataset (~3M rows, 54 stores × 33 families, 2013–2017). See
+Predicts next-week sales for each of 45 Walmart stores using the Kaggle
+["Walmart Sales"](https://www.kaggle.com/datasets/mikhail1681/walmart-sales)
+dataset (6,435 rows, 45 stores × 143 weeks, 2010–2012 — weekly sales plus
+holiday-week flag, temperature, fuel price, CPI, and unemployment). See
 [docs/PROBLEM_DEFINITION.md](docs/PROBLEM_DEFINITION.md) for the full
 business problem, requirements, and success metrics, and
 [ARCHITECTURE.md](ARCHITECTURE.md) for the system design and trade-offs.
+
+## Train / CV / Test split
+
+Every training run does a **chronological, three-stage split** (never
+random — see `chronological_holdout_split()` and `train_and_log()` in
+[`models/train.py`](src/demand_forecast/models/train.py)) so the reported
+accuracy is honest, not just a number from data the model already saw:
+
+```
+Week 1 (2010-02-05) ───────────────────────► Week 135 ─► Week 143 (2012-10-26)
+│◄──────────── TRAIN + CV POOL (135 weeks) ─────────────►│◄─ TEST (8 weeks) ─►│
+│   rolling-origin CV picks the best hyperparameters      │  locked away until │
+│   (3 folds, same mechanism as before)                   │  the very last step│
+```
+
+1. **Pool** (all but the most recent `TEST_HOLDOUT_WEEKS`, default 8) feeds a
+   3-fold rolling-origin `TimeSeriesSplit` to pick the best LightGBM
+   hyperparameters — same CV mechanism the pipeline always had.
+2. Those hyperparameters are fit on the **pool only** and scored **once** on
+   the **test** weeks — data the model has never seen in any form. This is
+   the one honest, apples-to-apples number to trust.
+3. The same hyperparameters are then refit on **100% of the data** (pool +
+   test) for the model that actually gets registered/served — recent weeks
+   matter for a time series, so the deployed model shouldn't discard them
+   once the honest test score above has been recorded.
+
+**Real numbers from the full dataset** (`python scripts/run_pipeline.py`):
+
+| Metric | Value | Meaning |
+|---|---|---|
+| Baseline RMSLE (all data) | 0.1218 | naive previous-week persistence, whole dataset |
+| CV RMSLE (train+CV pool) | 0.0903 | used only to pick hyperparameters |
+| Baseline RMSLE (test weeks) | 0.0717 | naive baseline on the *same* 8 held-out weeks |
+| **Held-out TEST RMSLE** | **0.0428** | model that never saw those 8 weeks — beats the same-weeks baseline by ~40% |
 
 ## Local Development (no Docker)
 
@@ -36,11 +69,11 @@ pip install -e .   # installs demand_forecast in editable mode (needed to import
 # 2. Extract the dataset (zip provided with the assignment, project root)
 python scripts/setup_data.py
 
-# 3. Train (ingest -> validate -> features -> train/CV/tune -> MLflow ->
-#    reference snapshot -> Responsible AI report)
+# 3. Train (ingest -> validate -> features -> train/CV/tune -> held-out
+#    test eval -> MLflow -> reference snapshot -> Responsible AI report)
 python scripts/run_pipeline.py
-# ~10-15 min on the full ~3M-row dataset; watch for "[i/6] cv_mean_rmsle=..."
-# progress lines — a long silent gap right after it is expected, not a hang.
+# Trains in well under a minute on this dataset (~6.4K rows); prints
+# baseline/CV/held-out-test RMSLE side by side (see "Train / CV / Test split").
 
 # 4. Serve
 uvicorn demand_forecast.api.main:app --reload
@@ -100,31 +133,36 @@ Full instructions, all service URLs, and troubleshooting:
 ```bash
 curl -X POST http://localhost:8000/api/v1/predict \
   -H "Content-Type: application/json" \
-  -d '{"store_nbr": 1, "family": "GROCERY I", "date": "2017-08-20", "onpromotion": 5}'
+  -d '{"store_nbr": 1, "date": "2012-12-28"}'
 # Windows (PowerShell, curl is aliased to Invoke-WebRequest there):
-# Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/predict -ContentType "application/json" -Body '{"store_nbr": 1, "family": "GROCERY I", "date": "2017-08-20", "onpromotion": 5}'
+# Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/predict -ContentType "application/json" -Body '{"store_nbr": 1, "date": "2012-12-28"}'
 ```
 
 ```json
 {
   "store_nbr": 1,
-  "family": "GROCERY I",
-  "date": "2017-08-20",
-  "predicted_sales": 1042.37,
+  "date": "2012-12-28",
+  "predicted_sales": 1504552.38,
   "model_name": "demand-forecast-lgbm",
   "model_alias": "production"
 }
 ```
 
+`store_nbr` and `date` are the only required fields; `holiday_flag`,
+`temperature`, `fuel_price`, `cpi`, and `unemployment` are optional
+overrides — omitted ones default to the store's last known value (or a
+rule-based holiday-week detector for `holiday_flag`). See `/docs` for the
+full schema.
+
 ## What's implemented
 
 | Area | Highlights |
 |---|---|
-| **ML pipeline** | Validated ingestion (`data/ingest.py`, `data/validate.py`), causal feature engineering (`data/features.py`), seasonal-naive baseline + LightGBM with time-series cross-validation + hyperparameter search, full MLflow tracking & model registry (`models/train.py`) |
+| **ML pipeline** | Validated ingestion (`data/ingest.py`, `data/validate.py`), causal feature engineering incl. rule-based holiday-week detection (`data/features.py`), naive baseline + LightGBM with time-series CV + hyperparameter search + a **true chronological held-out test set** (never trained on — see [Train / CV / Test split](#train--cv--test-split)), full MLflow tracking & model registry (`models/train.py`) |
 | **Deployment** | FastAPI (`/api/v1/predict`, `/api/v1/predict/batch`, `/health`, auto Swagger at `/docs`), multi-stage non-root Dockerfile, 4-service `docker-compose.yml` (API, MLflow, Prometheus, Grafana) |
 | **Monitoring** | Auto HTTP metrics + custom ML metrics (prediction count/latency/value distribution, model version) via `prometheus-fastapi-instrumentator`; provisioned Grafana dashboard; 5 Prometheus alert rules |
-| **Testing & CI/CD** | 65+ tests across unit / integration / data-quality / model-validation (`tests/`), 96% coverage, GitHub Actions pipeline (lint → test → Docker build) |
-| **Responsible AI** | Store-segment fairness/disparity analysis, SHAP + native gain-importance explainability, privacy & ethics discussion — [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) |
+| **Testing & CI/CD** | 85+ tests across unit / integration / data-quality / model-validation (`tests/`), 97% coverage, GitHub Actions pipeline (lint → test → Docker build) |
+| **Responsible AI** | Store-segment fairness/disparity analysis (flagged a real 2.2x per-store disparity — see docs), SHAP + native gain-importance explainability, privacy & ethics discussion — [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) |
 | **Docs** | This README, [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [docs/PROBLEM_DEFINITION.md](docs/PROBLEM_DEFINITION.md), [docs/USER_GUIDE.md](docs/USER_GUIDE.md), OpenAPI/Swagger at `/docs` |
 
 ## Project structure

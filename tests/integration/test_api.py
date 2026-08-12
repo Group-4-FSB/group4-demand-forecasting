@@ -10,44 +10,58 @@ def test_health_returns_ok_with_model_loaded(api_client):
 
 
 def test_predict_success(api_client):
-    r = api_client.post(
-        "/api/v1/predict",
-        json={"store_nbr": 1, "family": "dairy", "date": "2017-08-20", "onpromotion": 2},
-    )
+    r = api_client.post("/api/v1/predict", json={"store_nbr": 1, "date": "2012-11-02"})
     assert r.status_code == 200
     body = r.json()
-    assert body["family"] == "DAIRY"  # normalized to uppercase
+    assert body["store_nbr"] == 1
     assert body["predicted_sales"] >= 0
     assert body["model_name"]
     assert body["model_alias"]
 
 
-def test_predict_unknown_store_family_returns_404(api_client):
+def test_predict_auto_detects_holiday_week(api_client):
+    r = api_client.post("/api/v1/predict", json={"store_nbr": 1, "date": "2012-12-21"})
+    assert r.status_code == 200
+
+
+def test_predict_accepts_explicit_overrides(api_client):
     r = api_client.post(
         "/api/v1/predict",
-        json={"store_nbr": 424242, "family": "DAIRY", "date": "2017-08-20", "onpromotion": 0},
+        json={
+            "store_nbr": 1,
+            "date": "2012-11-02",
+            "holiday_flag": 1,
+            "temperature": 45.0,
+            "fuel_price": 3.1,
+            "cpi": 210.5,
+            "unemployment": 7.2,
+        },
     )
+    assert r.status_code == 200
+
+
+def test_predict_store_outside_valid_range_returns_422(api_client):
+    r = api_client.post("/api/v1/predict", json={"store_nbr": 46, "date": "2012-11-02"})
+    assert r.status_code == 422
+
+
+def test_predict_store_not_in_training_data_returns_404(api_client):
+    # store 4 is within the valid 1-45 range but the test fixture only has
+    # stores 1-3, so it's a legitimate "unknown to this model" 404, not a
+    # pydantic-level validation error.
+    r = api_client.post("/api/v1/predict", json={"store_nbr": 4, "date": "2012-11-02"})
     assert r.status_code == 404
     assert "detail" in r.json()
 
 
-def test_predict_invalid_store_nbr_returns_422(api_client):
-    r = api_client.post(
-        "/api/v1/predict",
-        json={"store_nbr": -1, "family": "DAIRY", "date": "2017-08-20", "onpromotion": 0},
-    )
-    assert r.status_code == 422
-
-
 def test_predict_missing_required_field_returns_422(api_client):
-    r = api_client.post("/api/v1/predict", json={"store_nbr": 1, "date": "2017-08-20"})
+    r = api_client.post("/api/v1/predict", json={"store_nbr": 1})
     assert r.status_code == 422
 
 
-def test_predict_negative_onpromotion_returns_422(api_client):
+def test_predict_invalid_holiday_flag_returns_422(api_client):
     r = api_client.post(
-        "/api/v1/predict",
-        json={"store_nbr": 1, "family": "DAIRY", "date": "2017-08-20", "onpromotion": -5},
+        "/api/v1/predict", json={"store_nbr": 1, "date": "2012-11-02", "holiday_flag": 2}
     )
     assert r.status_code == 422
 
@@ -57,8 +71,8 @@ def test_predict_batch_success(api_client):
         "/api/v1/predict/batch",
         json={
             "items": [
-                {"store_nbr": 1, "family": "DAIRY", "date": "2017-08-20", "onpromotion": 0},
-                {"store_nbr": 2, "family": "BEVERAGES", "date": "2017-08-21", "onpromotion": 1},
+                {"store_nbr": 1, "date": "2012-11-02"},
+                {"store_nbr": 2, "date": "2012-11-09"},
             ]
         },
     )
@@ -80,11 +94,7 @@ def test_metrics_endpoint_exposes_prometheus_format(api_client):
 
 
 def test_metrics_endpoint_includes_custom_ml_metrics(api_client):
-    # trigger at least one prediction so the counters have a sample
-    api_client.post(
-        "/api/v1/predict",
-        json={"store_nbr": 1, "family": "DAIRY", "date": "2017-08-20", "onpromotion": 0},
-    )
+    api_client.post("/api/v1/predict", json={"store_nbr": 1, "date": "2012-11-02"})
     r = api_client.get("/metrics")
     body = r.text
     assert "demand_forecast_predictions_total" in body

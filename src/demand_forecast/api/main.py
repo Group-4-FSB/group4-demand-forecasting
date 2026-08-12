@@ -34,7 +34,7 @@ from demand_forecast.api.schemas import (
     PredictResponse,
 )
 from demand_forecast.config import settings
-from demand_forecast.models.predict import PredictionService, UnknownStoreFamilyError
+from demand_forecast.models.predict import PredictionService, UnknownStoreError
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +57,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Demand Forecast API",
-    description="Predicts daily unit sales per (store, product family) for "
-    "Corporación Favorita — DDM501 final project.",
+    description="Predicts weekly sales per Walmart store — DDM501 final project.",
     version=__version__,
     lifespan=lifespan,
 )
@@ -79,16 +78,23 @@ def _service(request: Request) -> PredictionService:
 def _predict_one(service: PredictionService, item: PredictRequest) -> PredictResponse:
     start = time.perf_counter()
     try:
-        value = service.predict(item.store_nbr, item.family, item.date, item.onpromotion)
-    except UnknownStoreFamilyError as exc:
-        PREDICTION_ERRORS_TOTAL.labels(reason="unknown_store_family").inc()
+        value = service.predict(
+            item.store_nbr,
+            item.date,
+            item.holiday_flag,
+            item.temperature,
+            item.fuel_price,
+            item.cpi,
+            item.unemployment,
+        )
+    except UnknownStoreError as exc:
+        PREDICTION_ERRORS_TOTAL.labels(reason="unknown_store").inc()
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     PREDICTION_LATENCY_SECONDS.observe(time.perf_counter() - start)
-    PREDICTIONS_TOTAL.labels(family=item.family).inc()
+    PREDICTIONS_TOTAL.labels(store_nbr=str(item.store_nbr)).inc()
     PREDICTED_SALES_VALUE.observe(value)
     return PredictResponse(
         store_nbr=item.store_nbr,
-        family=item.family,
         date=item.date,
         predicted_sales=round(value, 2),
         model_name=settings.mlflow_model_name,

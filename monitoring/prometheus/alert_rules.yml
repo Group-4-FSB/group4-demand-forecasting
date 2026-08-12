@@ -35,7 +35,7 @@ groups:
           severity: warning
         annotations:
           summary: "Elevated prediction error rate"
-          description: "More than 0.5 prediction errors/sec (e.g. unknown store/family) over 5 minutes."
+          description: "More than 0.5 prediction errors/sec (e.g. unknown store) over 5 minutes."
 
       - alert: NoPredictionTraffic
         expr: sum(rate(demand_forecast_predictions_total[15m])) == 0

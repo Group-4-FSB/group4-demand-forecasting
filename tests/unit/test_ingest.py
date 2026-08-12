@@ -1,52 +1,35 @@
 from __future__ import annotations
 
-import pandas as pd
 import pytest
-from demand_forecast.data.ingest import build_holiday_flags, load_raw_tables, merge_dataset
+from demand_forecast.data.ingest import load_walmart_sales
 
 
-def test_load_raw_tables_returns_all_expected_keys(raw_tables):
-    assert set(raw_tables) == {"train", "test", "stores", "oil", "holidays", "transactions"}
-    for df in raw_tables.values():
-        assert len(df) > 0
+def test_load_walmart_sales_returns_expected_columns(raw_df):
+    expected = {
+        "store_nbr",
+        "date",
+        "sales",
+        "holiday_flag",
+        "temperature",
+        "fuel_price",
+        "cpi",
+        "unemployment",
+    }
+    assert expected <= set(raw_df.columns)
+    assert len(raw_df) > 0
 
 
-def test_load_raw_tables_missing_file_raises(tmp_path):
+def test_load_walmart_sales_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
-        load_raw_tables(tmp_path)
+        load_walmart_sales(tmp_path)
 
 
-def test_merge_dataset_invalid_split_raises(raw_tables):
-    with pytest.raises(ValueError):
-        merge_dataset(raw_tables, split="not_a_split")
+def test_load_walmart_sales_parses_dates_and_sorts(raw_df):
+    assert str(raw_df["date"].dtype).startswith("datetime64")
+    # sorted by store_nbr then date within each store
+    for _, group in raw_df.groupby("store_nbr"):
+        assert group["date"].is_monotonic_increasing
 
 
-def test_merge_dataset_train_has_sales_column(raw_tables):
-    merged = merge_dataset(raw_tables, split="train")
-    assert "sales" in merged.columns
-    assert "oil_price" in merged.columns
-    assert "is_holiday" in merged.columns
-
-
-def test_merge_dataset_test_has_no_sales_column(raw_tables):
-    merged = merge_dataset(raw_tables, split="test")
-    assert "sales" not in merged.columns
-
-
-def test_build_holiday_flags_excludes_transferred_holidays():
-    holidays = pd.DataFrame(
-        {
-            "date": [pd.Timestamp("2017-01-01"), pd.Timestamp("2017-01-02")],
-            "type": ["Holiday", "Event"],
-            "locale": ["National", "National"],
-            "locale_name": ["Ecuador", "Ecuador"],
-            "description": ["x", "y"],
-            "transferred": [True, False],
-        }
-    )
-    daily = build_holiday_flags(holidays)
-    # the transferred Holiday row should be dropped entirely
-    assert pd.Timestamp("2017-01-01") not in daily["date"].to_numpy()
-    row = daily.loc[daily["date"] == pd.Timestamp("2017-01-02")].iloc[0]
-    assert row["is_event"] == 1
-    assert row["is_holiday"] == 0
+def test_load_walmart_sales_holiday_flag_is_binary(raw_df):
+    assert raw_df["holiday_flag"].isin([0, 1]).all()

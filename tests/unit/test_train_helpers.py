@@ -1,6 +1,37 @@
 from __future__ import annotations
 
-from demand_forecast.models.train import sample_param_grid, time_series_cv_splits
+import pytest
+from demand_forecast.models.train import (
+    chronological_holdout_split,
+    sample_param_grid,
+    time_series_cv_splits,
+)
+
+
+def test_chronological_holdout_split_sizes(features_df):
+    total_weeks = features_df["date"].nunique()
+    pool, test = chronological_holdout_split(features_df, test_weeks=8)
+    assert test["date"].nunique() == 8
+    assert pool["date"].nunique() == total_weeks - 8
+    assert len(pool) + len(test) == len(features_df)
+
+
+def test_chronological_holdout_split_is_strictly_ordered(features_df):
+    pool, test = chronological_holdout_split(features_df, test_weeks=8)
+    assert pool["date"].max() < test["date"].min()
+
+
+def test_chronological_holdout_split_no_overlap(features_df):
+    pool, test = chronological_holdout_split(features_df, test_weeks=8)
+    assert set(pool["date"].unique()).isdisjoint(set(test["date"].unique()))
+
+
+def test_chronological_holdout_split_rejects_too_large_test_weeks(features_df):
+    total_weeks = features_df["date"].nunique()
+    with pytest.raises(ValueError):
+        chronological_holdout_split(features_df, test_weeks=total_weeks)
+    with pytest.raises(ValueError):
+        chronological_holdout_split(features_df, test_weeks=0)
 
 
 def test_time_series_cv_splits_are_chronological_and_disjoint(features_df):

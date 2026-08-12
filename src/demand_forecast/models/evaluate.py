@@ -1,8 +1,9 @@
 """Evaluation metrics for the demand forecasting model.
 
-RMSLE is the primary metric: it is the Kaggle competition's own metric, and it
-penalizes relative (not absolute) error — appropriate since sales volume varies
-hugely across store/family combinations (a few units vs thousands).
+RMSLE is the primary metric: it penalizes relative (not absolute) error —
+appropriate since weekly sales volume varies hugely across Walmart stores
+(roughly $260K to $2.1M/week, an ~8x spread), so a fixed dollar error means
+very different things for a small store vs. a flagship one.
 """
 
 from __future__ import annotations

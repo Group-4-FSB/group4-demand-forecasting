@@ -1,5 +1,6 @@
-"""Model training: seasonal-naive baseline + LightGBM with time-series CV,
-a small hyperparameter search, and full MLflow experiment tracking.
+"""Model training: naive (previous-week) baseline + LightGBM with
+time-series CV, a small hyperparameter search, and full MLflow experiment
+tracking.
 
 Run directly (`python -m demand_forecast.models.train` or via
 `scripts/run_pipeline.py`) to train on the full dataset in data/raw/, or import
@@ -30,17 +31,20 @@ from demand_forecast.data.features import (
     TARGET,
     build_features,
 )
-from demand_forecast.data.ingest import load_raw_tables, merge_dataset
+from demand_forecast.data.ingest import load_walmart_sales
 from demand_forecast.data.validate import validate_sales_table
 from demand_forecast.models.evaluate import evaluate_all
 
 logger = logging.getLogger(__name__)
 
+# Small-data-friendly grid: the full dataset is only ~6.4K rows (45 stores x
+# 143 weeks), a fraction of what the original daily-grain dataset had, so
+# num_leaves/min_child_samples are kept low to reduce overfitting risk.
 DEFAULT_PARAM_GRID = {
-    "num_leaves": [31, 63, 127],
-    "learning_rate": [0.05, 0.1],
-    "n_estimators": [200, 400],
-    "min_child_samples": [20, 50],
+    "num_leaves": [7, 15, 31],
+    "learning_rate": [0.03, 0.05, 0.1],
+    "n_estimators": [100, 200],
+    "min_child_samples": [5, 10, 20],
 }
 
 
@@ -58,14 +62,13 @@ def _ensure_experiment(name: str, artifact_root: str) -> None:
 
 def prepare_training_frame(raw_dir: Path) -> pd.DataFrame:
     """Load, validate, and feature-engineer the full training table."""
-    tables = load_raw_tables(raw_dir)
-    merged = merge_dataset(tables, split="train")
-    report = validate_sales_table(merged, tables["stores"])
+    df = load_walmart_sales(raw_dir)
+    report = validate_sales_table(df)
     if not report.ok:
         raise ValueError(f"Data validation failed: {report.errors}")
     for w in report.warnings:
         logger.warning("Data quality warning: %s", w)
-    return build_features(merged)
+    return build_features(df)
 
 
 def time_series_cv_splits(dates: pd.Series, n_splits: int) -> list[tuple[np.ndarray, np.ndarray]]:
@@ -83,11 +86,38 @@ def time_series_cv_splits(dates: pd.Series, n_splits: int) -> list[tuple[np.ndar
     return splits
 
 
-def seasonal_naive_baseline(df: pd.DataFrame) -> dict[str, float]:
-    """Baseline: predict this week's sales as last week's same-weekday sales
-    (already computed as the `sales_lag_7` feature). No training required."""
-    mask = df["sales_lag_7"].notna()
-    return evaluate_all(df.loc[mask, TARGET], df.loc[mask, "sales_lag_7"])
+def chronological_holdout_split(
+    df: pd.DataFrame, test_weeks: int
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split by date into (pool, test): `pool` is every week except the most
+    recent `test_weeks`, `test` is those held-out weeks.
+
+    `pool` is the only data allowed into training and hyperparameter-search
+    CV. `test` is never trained on or used to pick hyperparameters — it
+    exists purely for a one-time, honest accuracy check (see `train_and_log`)
+    before the final production model is refit on 100% of the data. Splitting
+    happens *after* feature engineering, so `test` rows keep correct
+    backward-looking lag/rolling values computed from real history — nothing
+    here can leak future information into the past.
+    """
+    unique_dates = np.sort(df["date"].unique())
+    if test_weeks <= 0 or test_weeks >= len(unique_dates):
+        raise ValueError(
+            f"test_weeks={test_weeks} must be between 1 and {len(unique_dates) - 1} "
+            f"(dataset has {len(unique_dates)} unique weeks)"
+        )
+    cutoff_date = unique_dates[-test_weeks]
+    pool = df.loc[df["date"] < cutoff_date].copy()
+    test = df.loc[df["date"] >= cutoff_date].copy()
+    return pool, test
+
+
+def naive_baseline(df: pd.DataFrame) -> dict[str, float]:
+    """Baseline: predict this week's sales as last week's sales for the same
+    store (already computed as the `sales_lag_1` feature). No training
+    required — data is weekly, so lag_1 is the simplest persistence baseline."""
+    mask = df["sales_lag_1"].notna()
+    return evaluate_all(df.loc[mask, TARGET], df.loc[mask, "sales_lag_1"])
 
 
 def sample_param_grid(
@@ -125,33 +155,86 @@ def cv_score_params(
     return mean_rmsle, fold_metrics
 
 
+def _fit_lgbm(train_df: pd.DataFrame, feature_cols: list[str], params: dict[str, Any]):
+    model = lgb.LGBMRegressor(
+        objective="regression",
+        random_state=settings.random_seed,
+        verbosity=-1,
+        **params,
+    )
+    model.fit(
+        train_df[feature_cols],
+        train_df[LOG_TARGET],
+        categorical_feature=[c for c in CATEGORICAL_FEATURES if c in feature_cols],
+    )
+    return model
+
+
 def train_and_log(
     df: pd.DataFrame,
     n_cv_splits: int = settings.n_cv_splits,
     n_param_samples: int = 6,
     param_grid: dict[str, list[Any]] | None = None,
     register_model: bool = True,
+    test_weeks: int = settings.test_holdout_weeks,
 ) -> dict[str, Any]:
     """Run baseline + tuned LightGBM training, logging everything to MLflow.
 
-    Returns a summary dict with baseline metrics, best params, best CV metrics,
-    and the MLflow run id of the final (best) model.
+    Three-stage split (chronological, never random — see `docs/USER_GUIDE.md`
+    "Train / CV / Test" section for the full walkthrough with real dates):
+
+    1. The most recent `test_weeks` weeks are held out as `test` and are
+       *never* seen during hyperparameter search or training below —
+       `chronological_holdout_split` carves them off first.
+    2. Everything else (`pool`) is used for the baseline + the rolling-origin
+       CV hyperparameter search (`time_series_cv_splits`), exactly as before.
+    3. The best hyperparameters are (a) fit on `pool` alone and scored once
+       on `test` for an honest, never-trained-on accuracy number
+       (`test_metrics`), then (b) refit on the *full* `df` (pool + test) as
+       the model that actually gets registered — recent data matters for a
+       time series, so the production model shouldn't discard it once the
+       honest test score has been recorded.
+
+    Returns a summary dict with baseline metrics, best params, CV metrics,
+    held-out test metrics, and the MLflow run id of the final (registered)
+    model.
     """
     mlflow.set_tracking_uri(settings.mlflow_tracking_uri)
     _ensure_experiment(settings.mlflow_experiment_name, settings.mlflow_artifact_root)
 
-    splits = time_series_cv_splits(df["date"], n_cv_splits)
+    pool_df, test_df = chronological_holdout_split(df, test_weeks)
+    logger.info(
+        "Chronological split: %d weeks in train+CV pool (%s -> %s), "
+        "%d weeks held out as test (%s -> %s, never trained on until step 3b)",
+        pool_df["date"].nunique(),
+        pool_df["date"].min().date(),
+        pool_df["date"].max().date(),
+        test_df["date"].nunique(),
+        test_df["date"].min().date(),
+        test_df["date"].max().date(),
+    )
+
+    splits = time_series_cv_splits(pool_df["date"], n_cv_splits)
     feature_cols = [c for c in ALL_FEATURES if c in df.columns]
 
-    # 1. Baseline run — logged for comparison ("multiple experiments").
-    logger.info("Computing seasonal-naive baseline on %d rows...", len(df))
-    baseline_metrics = seasonal_naive_baseline(df)
-    logger.info("Baseline RMSLE: %.4f", baseline_metrics["rmsle"])
-    with mlflow.start_run(run_name="baseline_seasonal_naive"):
+    # 1. Baseline — reference number across the whole dataset ("multiple
+    #    experiments" for comparison), plus the same baseline restricted to
+    #    the held-out test weeks for a fair side-by-side with test_metrics.
+    logger.info("Computing naive (previous-week) baseline on %d rows...", len(df))
+    baseline_metrics = naive_baseline(df)
+    baseline_test_metrics = naive_baseline(test_df)
+    logger.info(
+        "Baseline RMSLE: %.4f (all data) / %.4f (test weeks only)",
+        baseline_metrics["rmsle"],
+        baseline_test_metrics["rmsle"],
+    )
+    with mlflow.start_run(run_name="baseline_naive_previous_week"):
         mlflow.set_tag("model_type", "baseline")
         mlflow.log_metrics({f"holdout_{k}": v for k, v in baseline_metrics.items()})
+        mlflow.log_metrics({f"test_{k}": v for k, v in baseline_test_metrics.items()})
 
-    # 2. Small random hyperparameter search over LightGBM, each combo its own run.
+    # 2. Small random hyperparameter search over LightGBM on the pool only,
+    #    each combo its own run.
     grid = param_grid or DEFAULT_PARAM_GRID
     candidates = sample_param_grid(grid, n_param_samples, seed=settings.random_seed)
     logger.info(
@@ -161,7 +244,7 @@ def train_and_log(
         len(candidates),
         n_cv_splits,
         len(candidates) * n_cv_splits,
-        len(df),
+        len(pool_df),
     )
 
     best_score = float("inf")
@@ -172,7 +255,7 @@ def train_and_log(
         with mlflow.start_run(run_name=f"lgbm_{'_'.join(str(v) for v in params.values())}"):
             mlflow.set_tag("model_type", "lightgbm")
             mlflow.log_params(params)
-            mean_rmsle, fold_metrics = cv_score_params(df, params, splits)
+            mean_rmsle, fold_metrics = cv_score_params(pool_df, params, splits)
             for j, fm in enumerate(fold_metrics):
                 mlflow.log_metrics({f"fold{j}_{k}": v for k, v in fm.items()})
             mlflow.log_metric("cv_mean_rmsle", mean_rmsle)
@@ -183,28 +266,43 @@ def train_and_log(
             best_fold_metrics = fold_metrics
 
     assert best_params is not None
-    logger.info("Best params so far: %s (cv_mean_rmsle=%.4f)", best_params, best_score)
+    logger.info("Best params from CV: %s (cv_mean_rmsle=%.4f)", best_params, best_score)
 
-    # 3. Retrain best params on the full dataset and register the final model.
-    logger.info("Retraining best model on the full dataset and logging to MLflow...")
-    final_model = lgb.LGBMRegressor(
-        objective="regression",
-        random_state=settings.random_seed,
-        verbosity=-1,
-        **best_params,
+    # 3a. Honest held-out evaluation: fit ONLY on the pool, score ONCE on the
+    #     test weeks the model has never seen in any form up to this point.
+    logger.info(
+        "Evaluating best params on the %d held-out test week(s) (never used for "
+        "training or hyperparameter selection)...",
+        test_df["date"].nunique(),
     )
-    final_model.fit(
-        df[feature_cols],
-        df[LOG_TARGET],
-        categorical_feature=[c for c in CATEGORICAL_FEATURES if c in feature_cols],
+    eval_model = _fit_lgbm(pool_df, feature_cols, best_params)
+    test_preds = np.expm1(eval_model.predict(test_df[feature_cols]))
+    test_metrics = evaluate_all(test_df[TARGET], test_preds)
+    logger.info(
+        "Held-out test RMSLE: %.4f (naive baseline on the same weeks: %.4f)",
+        test_metrics["rmsle"],
+        baseline_test_metrics["rmsle"],
     )
+    with mlflow.start_run(run_name="holdout_test_evaluation"):
+        mlflow.set_tag("model_type", "lightgbm_holdout_eval")
+        mlflow.log_params(best_params)
+        mlflow.log_param("test_weeks", test_weeks)
+        mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
+        mlflow.log_metrics({f"baseline_test_{k}": v for k, v in baseline_test_metrics.items()})
+
+    # 3b. Refit on the FULL dataset (pool + test) with the same best params —
+    #     this is the model that actually gets logged/registered for serving.
+    logger.info("Retraining the production model on the full dataset (pool + test)...")
+    final_model = _fit_lgbm(df, feature_cols, best_params)
     logger.info("Final model trained. Logging model + artifacts to MLflow...")
 
     with mlflow.start_run(run_name="best_lightgbm_final") as run:
         mlflow.set_tag("model_type", "lightgbm_final")
         mlflow.log_params(best_params)
+        mlflow.log_param("test_weeks", test_weeks)
         mlflow.log_metric("cv_mean_rmsle", best_score)
         mlflow.log_metrics({f"baseline_{k}": v for k, v in baseline_metrics.items()})
+        mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
         mlflow.log_dict({"feature_columns": feature_cols}, "feature_columns.json")
 
         importances = pd.Series(
@@ -237,9 +335,12 @@ def train_and_log(
 
     return {
         "baseline_metrics": baseline_metrics,
+        "baseline_test_metrics": baseline_test_metrics,
         "best_params": best_params,
         "best_cv_rmsle": best_score,
         "best_fold_metrics": best_fold_metrics,
+        "test_metrics": test_metrics,
+        "test_weeks": test_weeks,
         "run_id": final_run_id,
         "model_uri": model_info.model_uri,
         "model": final_model,
@@ -254,7 +355,9 @@ def main() -> None:
     logger.info("Training complete: %s", summary)
     print(
         f"Baseline RMSLE={summary['baseline_metrics']['rmsle']:.4f} | "
-        f"Best LightGBM CV RMSLE={summary['best_cv_rmsle']:.4f} "
+        f"Best LightGBM CV RMSLE={summary['best_cv_rmsle']:.4f} | "
+        f"Held-out test RMSLE={summary['test_metrics']['rmsle']:.4f} "
+        f"(vs baseline {summary['baseline_test_metrics']['rmsle']:.4f} on same weeks) "
         f"(params={summary['best_params']})"
     )
 

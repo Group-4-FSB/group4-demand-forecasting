@@ -26,29 +26,19 @@ os.environ.setdefault("MLFLOW_MODEL_NAME", "demand-forecast-lgbm-test")
 
 import pytest  # noqa: E402
 from demand_forecast.data.features import build_features  # noqa: E402
-from demand_forecast.data.ingest import load_raw_tables, merge_dataset  # noqa: E402
+from demand_forecast.data.ingest import load_walmart_sales  # noqa: E402
 from demand_forecast.data.snapshot import save_reference_artifacts  # noqa: E402
 from demand_forecast.models.train import train_and_log  # noqa: E402
 
 
 @pytest.fixture(scope="session")
-def raw_tables():
-    return load_raw_tables(FIXTURES_DIR)
+def raw_df():
+    return load_walmart_sales(FIXTURES_DIR)
 
 
 @pytest.fixture(scope="session")
-def merged_df(raw_tables):
-    return merge_dataset(raw_tables, split="train")
-
-
-@pytest.fixture(scope="session")
-def merged_test_df(raw_tables):
-    return merge_dataset(raw_tables, split="test")
-
-
-@pytest.fixture(scope="session")
-def features_df(merged_df):
-    return build_features(merged_df)
+def features_df(raw_df):
+    return build_features(raw_df)
 
 
 @pytest.fixture(scope="session")
@@ -59,12 +49,10 @@ def trained_summary(features_df):
 
 
 @pytest.fixture(scope="session")
-def reference_snapshot_dir(raw_tables, features_df, trained_summary):
+def reference_snapshot_dir(features_df, trained_summary):
     from demand_forecast.config import settings
 
-    save_reference_artifacts(
-        features_df, raw_tables["stores"], raw_tables["holidays"], settings.data_processed_dir
-    )
+    save_reference_artifacts(features_df, settings.data_processed_dir)
     return settings.data_processed_dir
 
 

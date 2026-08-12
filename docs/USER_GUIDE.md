@@ -4,8 +4,8 @@
 
 - Python **3.10** (project pins to this version — see `pyproject.toml`)
 - Docker Desktop (for the full stack: API + MLflow + Prometheus + Grafana)
-- The Kaggle dataset zip `store-sales-time-series-forecasting.zip` in the
-  project root (already provided with this assignment)
+- The Kaggle dataset zip `walmart_sales.zip` in the project root (already
+  provided with this assignment)
 
 ## 1. Local development (no Docker)
 
@@ -61,8 +61,7 @@ docker compose ps   # wait for STATUS = healthy
 export MLFLOW_TRACKING_URI=http://localhost:5000
 # Windows (PowerShell): $env:MLFLOW_TRACKING_URI = "http://localhost:5000"
 python scripts/run_pipeline.py
-# ~10-15 min on the full dataset; a long gap with no new log lines right
-# after "Will assume non-transactional DDL" is expected — see Troubleshooting.
+# Trains in well under a minute on this dataset (~6.4K rows).
 
 # 3. Bring up the rest of the stack (api, prometheus, grafana)
 docker compose up --build
@@ -86,15 +85,21 @@ already allocated".
 ```bash
 curl -X POST http://localhost:8000/api/v1/predict \
   -H "Content-Type: application/json" \
-  -d '{"store_nbr": 1, "family": "GROCERY I", "date": "2017-08-20", "onpromotion": 5}'
+  -d '{"store_nbr": 1, "date": "2012-12-28"}'
 
 curl -X POST http://localhost:8000/api/v1/predict/batch \
   -H "Content-Type: application/json" \
   -d '{"items": [
-        {"store_nbr": 1, "family": "DAIRY", "date": "2017-08-20", "onpromotion": 0},
-        {"store_nbr": 2, "family": "BEVERAGES", "date": "2017-08-21", "onpromotion": 1}
+        {"store_nbr": 1, "date": "2012-11-02"},
+        {"store_nbr": 2, "date": "2012-11-09", "temperature": 55.2}
       ]}'
 ```
+
+`store_nbr` and `date` are required; `holiday_flag`, `temperature`,
+`fuel_price`, `cpi`, and `unemployment` are all optional — omitted fields
+default to the store's last known value (economic indicators) or a
+rule-based holiday-week detector (`holiday_flag`). See `/docs` for the full
+schema.
 
 ### Shutting down
 
@@ -128,7 +133,7 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
 | API `/health` returns `"status": "degraded"` | No model has been trained/registered yet, or `data/processed/` is empty | Run `python scripts/run_pipeline.py`, then restart the API |
 | `libgomp.so.1: cannot open shared object file` (only if you modify the Dockerfile and drop the apt step) | LightGBM's OpenMP runtime dependency missing from the image | Keep the `libgomp1` install step in `Dockerfile` |
 | MLflow artifact download fails from the API container | MLflow server started without `--serve-artifacts` | Use the provided `Dockerfile.mlflow` command as-is, or ensure `--serve-artifacts --artifacts-destination ...` are both set |
-| `404 Not Found` on `/api/v1/predict` for a valid-looking store/family | That exact (store_nbr, family) pair wasn't in the training data used to build the reference snapshot | Confirm with `stores.csv`/`train.csv`; this is intentional — the API refuses to guess for unseen combinations |
+| `404 Not Found` on `/api/v1/predict` for a store number that looks valid | That `store_nbr` wasn't in the training data used to build the reference snapshot (valid range is 1-45, but only stores actually present in `data/raw/` get a snapshot entry) | Confirm the store exists in `Walmart_Sales.csv`; this is intentional — the API refuses to guess for unseen stores |
 | Port already in use (`8000`/`5000`/`9090`/`3000`) | Another process/compose stack is already bound | Stop the conflicting process, or change the left-hand port in `docker-compose.yml`'s `ports:` mapping |
 | Tests are slow / hang | Full dataset accidentally used instead of `tests/fixtures/` | Tests should only ever read from `tests/fixtures/` (see `tests/conftest.py`) — check you haven't changed `raw_dir` in a fixture |
-| `run_pipeline.py` looks stuck after `"Will assume non-transactional DDL"` for several minutes | Usually **not stuck** — that's the last log line before hyperparameter search/CV, which trains up to ~19 LightGBM models on the full ~3M-row dataset and can take 5-10 minutes with no console output in between | Wait it out (watch CPU usage to confirm it's working); if it's genuinely frozen (0% CPU, no progress, and `mlflow.db` stays exclusively locked with no growth), kill the process and re-run — a real hang here usually means another process already had `mlflow.db` open (e.g. two training runs launched at once, or `mlflow ui` pointed at the same file) |
+| `run_pipeline.py` seems to pause briefly after `"Will assume non-transactional DDL"` | Normal — that's the last log line before hyperparameter search/CV; on this dataset (~6.4K rows) the whole run finishes in well under a minute, so any pause here is brief | If it's genuinely frozen for minutes (0% CPU, no progress, and `mlflow.db` stays exclusively locked with no growth), kill the process and re-run — a real hang here usually means another process already had `mlflow.db` open (e.g. two training runs launched at once, or `mlflow ui` pointed at the same file) |

@@ -13,7 +13,7 @@ from prometheus_client import Counter, Gauge, Histogram
 PREDICTIONS_TOTAL = Counter(
     "demand_forecast_predictions_total",
     "Total number of successful predictions served",
-    ["family"],
+    ["store_nbr"],
 )
 
 PREDICTION_ERRORS_TOTAL = Counter(
@@ -27,10 +27,24 @@ PREDICTION_LATENCY_SECONDS = Histogram(
     "Time spent computing a single model prediction (excludes HTTP overhead)",
 )
 
+# Buckets sized for Walmart weekly store sales (observed range ~$260K-$2.1M).
 PREDICTED_SALES_VALUE = Histogram(
     "demand_forecast_predicted_sales",
-    "Distribution of predicted sales values returned by the model",
-    buckets=(0, 1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000),
+    "Distribution of predicted weekly sales values returned by the model (USD)",
+    buckets=(
+        0,
+        100_000,
+        250_000,
+        500_000,
+        750_000,
+        1_000_000,
+        1_250_000,
+        1_500_000,
+        1_750_000,
+        2_000_000,
+        2_500_000,
+        3_000_000,
+    ),
 )
 
 MODEL_INFO = Gauge(

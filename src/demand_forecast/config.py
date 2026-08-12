@@ -54,7 +54,10 @@ class Settings:
     # Modeling
     random_seed: int = 42
     n_cv_splits: int = 3
-    test_horizon_days: int = 15  # matches Kaggle's public test window
+    # Most recent N weeks held out as a true, never-trained-on test set for a
+    # one-time honest accuracy check before the final model is refit on 100%
+    # of the data and promoted — see models/train.py chronological_holdout_split.
+    test_holdout_weeks: int = field(default_factory=lambda: int(_env("TEST_HOLDOUT_WEEKS", "8")))
 
 
 settings = Settings()

@@ -1,11 +1,11 @@
-"""Extract the Kaggle "Store Sales - Time Series Forecasting" dataset into data/raw/.
+"""Extract the Kaggle "Walmart Sales" dataset into data/raw/.
 
 Usage:
     python scripts/setup_data.py [--zip PATH] [--force]
 
-By default looks for `store-sales-time-series-forecasting.zip` in the project root
-(the file provided with the assignment). If you don't have the zip, download it from
-https://www.kaggle.com/competitions/store-sales-time-series-forecasting/data
+By default looks for `walmart_sales.zip` in the project root (the file
+provided with the assignment). If you don't have it, download it from
+https://www.kaggle.com/datasets/mikhail1681/walmart-sales
 (requires a free Kaggle account) and pass its path via --zip.
 """
 
@@ -17,18 +17,10 @@ import zipfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ZIP = PROJECT_ROOT / "store-sales-time-series-forecasting.zip"
+DEFAULT_ZIP = PROJECT_ROOT / "walmart_sales.zip"
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 
-EXPECTED_FILES = [
-    "train.csv",
-    "test.csv",
-    "stores.csv",
-    "oil.csv",
-    "holidays_events.csv",
-    "transactions.csv",
-    "sample_submission.csv",
-]
+EXPECTED_FILE = "Walmart_Sales.csv"
 
 
 def extract(zip_path: Path, dest_dir: Path, force: bool = False) -> None:
@@ -38,29 +30,25 @@ def extract(zip_path: Path, dest_dir: Path, force: bool = False) -> None:
         )
 
     dest_dir.mkdir(parents=True, exist_ok=True)
-    already_present = [f for f in EXPECTED_FILES if (dest_dir / f).exists()]
-    if already_present == EXPECTED_FILES and not force:
-        print(f"All expected files already present in {dest_dir}. Use --force to re-extract.")
+    if (dest_dir / EXPECTED_FILE).exists() and not force:
+        print(f"{EXPECTED_FILE} already present in {dest_dir}. Use --force to re-extract.")
         return
 
     with zipfile.ZipFile(zip_path) as zf:
         members = zf.namelist()
-        missing = [f for f in EXPECTED_FILES if f not in members]
-        if missing:
-            raise ValueError(f"Zip is missing expected files: {missing}")
+        if EXPECTED_FILE not in members:
+            raise ValueError(f"Zip is missing expected file: {EXPECTED_FILE} (found: {members})")
         zf.extractall(dest_dir)
 
-    print(f"Extracted {len(EXPECTED_FILES)} files to {dest_dir}")
-    for f in EXPECTED_FILES:
-        size_mb = (dest_dir / f).stat().st_size / (1024 * 1024)
-        print(f"  {f:<28} {size_mb:8.2f} MB")
+    size_mb = (dest_dir / EXPECTED_FILE).stat().st_size / (1024 * 1024)
+    print(f"Extracted {EXPECTED_FILE} ({size_mb:.2f} MB) to {dest_dir}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--zip", type=Path, default=DEFAULT_ZIP, help="Path to the dataset zip")
     parser.add_argument("--dest", type=Path, default=RAW_DIR, help="Destination directory")
-    parser.add_argument("--force", action="store_true", help="Re-extract even if files exist")
+    parser.add_argument("--force", action="store_true", help="Re-extract even if the file exists")
     args = parser.parse_args()
 
     try:

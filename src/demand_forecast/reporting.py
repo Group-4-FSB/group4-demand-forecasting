@@ -18,7 +18,11 @@ from demand_forecast.explainability.shap_explain import (
     save_local_waterfall_plot,
     top_features_by_mean_abs_shap,
 )
-from demand_forecast.fairness.fairness_report import DEFAULT_SEGMENT_COLUMNS, fairness_report
+from demand_forecast.fairness.fairness_report import (
+    DEFAULT_SEGMENT_COLUMNS,
+    add_fairness_segments,
+    fairness_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +59,7 @@ def generate_responsible_ai_report(
 
     df = df.copy()
     df["prediction"] = np.expm1(model.predict(df[feature_cols]))
+    df = add_fairness_segments(df)
 
     fair_report = fairness_report(df, segment_columns=DEFAULT_SEGMENT_COLUMNS)
     markdown = _render_fairness_markdown(fair_report)

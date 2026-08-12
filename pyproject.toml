@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "demand-forecast"
 version = "0.1.0"
-description = "DDM501 Final Project — End-to-end demand forecasting ML system (Corporación Favorita store sales)"
+description = "DDM501 Final Project — End-to-end demand forecasting ML system (Walmart store sales)"
 requires-python = ">=3.10,<3.11"
 readme = "README.md"
 license = { text = "MIT" }
