@@ -2,10 +2,23 @@ from __future__ import annotations
 
 import pytest
 from demand_forecast.models.train import (
+    _is_remote_tracking_uri,
     chronological_holdout_split,
     sample_param_grid,
     time_series_cv_splits,
 )
+
+
+def test_is_remote_tracking_uri_detects_http_servers():
+    assert _is_remote_tracking_uri("http://localhost:5000") is True
+    assert _is_remote_tracking_uri("http://mlflow:5000") is True
+    assert _is_remote_tracking_uri("https://mlflow.example.com") is True
+
+
+def test_is_remote_tracking_uri_rejects_local_backends():
+    assert _is_remote_tracking_uri("sqlite:///mlflow.db") is False
+    assert _is_remote_tracking_uri("file:///tmp/mlruns") is False
+    assert _is_remote_tracking_uri("./mlruns") is False
 
 
 def test_chronological_holdout_split_sizes(features_df):

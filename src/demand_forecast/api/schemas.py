@@ -34,7 +34,7 @@ class PredictRequest(BaseModel):
         "json_schema_extra": {
             "example": {
                 "store_nbr": 1,
-                "date": "2012-12-21",
+                "date": "2012-12-28",  # a real Christmas-week Friday in the training data
             }
         }
     }

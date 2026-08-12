@@ -48,15 +48,35 @@ DEFAULT_PARAM_GRID = {
 }
 
 
+def _is_remote_tracking_uri(tracking_uri: str) -> bool:
+    """True for an MLflow tracking *server* (http/https — e.g. the Dockerized
+    mlflow service), False for a local backend (sqlite:/// etc.)."""
+    return tracking_uri.startswith("http://") or tracking_uri.startswith("https://")
+
+
 def _ensure_experiment(name: str, artifact_root: str) -> None:
-    """Set the active MLflow experiment, creating it with an explicit artifact
-    location if it doesn't exist yet (avoids artifacts landing in a stray
-    ./mlruns relative to whatever the current working directory happens to be)."""
+    """Set the active MLflow experiment, creating it if it doesn't exist yet.
+
+    Local tracking (sqlite:///...): pass an explicit local artifact_location
+    so artifacts don't land in a stray ./mlruns relative to whatever the
+    current working directory happens to be.
+
+    Remote tracking (http(s)://... — e.g. the Dockerized mlflow service):
+    do NOT force a local filesystem path as artifact_location. The training
+    client (running on the host) can write to a local Windows/Mac/Linux path
+    just fine, but any *other* client reading the model later — e.g. the API
+    container, which only has the network, not that filesystem — can't. Let
+    the server pick its own artifact storage (mlflow-artifacts:/, proxied
+    over the same HTTP connection every client already uses) instead.
+    """
     client = mlflow.MlflowClient()
     experiment = client.get_experiment_by_name(name)
     if experiment is None:
-        Path(artifact_root).mkdir(parents=True, exist_ok=True)
-        mlflow.create_experiment(name, artifact_location=Path(artifact_root).as_uri())
+        if _is_remote_tracking_uri(mlflow.get_tracking_uri()):
+            mlflow.create_experiment(name)
+        else:
+            Path(artifact_root).mkdir(parents=True, exist_ok=True)
+            mlflow.create_experiment(name, artifact_location=Path(artifact_root).as_uri())
     mlflow.set_experiment(name)
 
 

@@ -20,8 +20,11 @@ def test_predict_success(api_client):
 
 
 def test_predict_auto_detects_holiday_week(api_client):
-    r = api_client.post("/api/v1/predict", json={"store_nbr": 1, "date": "2012-12-21"})
+    # 2012-12-28 is a real Christmas-week Friday in the training data
+    # (holiday_flag=1); the API must accept it without an explicit override.
+    r = api_client.post("/api/v1/predict", json={"store_nbr": 1, "date": "2012-12-28"})
     assert r.status_code == 200
+    assert r.json()["predicted_sales"] >= 0
 
 
 def test_predict_accepts_explicit_overrides(api_client):

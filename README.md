@@ -142,7 +142,7 @@ curl -X POST http://localhost:8000/api/v1/predict \
 {
   "store_nbr": 1,
   "date": "2012-12-28",
-  "predicted_sales": 1504552.38,
+  "predicted_sales": 1535863.08,
   "model_name": "demand-forecast-lgbm",
   "model_alias": "production"
 }
