@@ -262,31 +262,35 @@ here's how to see them fire in seconds instead of days:
   Then `python scripts/run_pipeline.py` again — it prints
   `REJECTED by quality gate — production unchanged`, and the MLflow UI shows
   the new run tagged `quality_gate=fail`.
-- **See the log-level WARNING immediately** (no infra needed): lower the
+- **Trigger the staleness warning without waiting 5 days**: lower the
   threshold instead of the clock —
   `python scripts/retrain_if_stale.py --max-age-days 1 --warning-lead-days 1`
-  logs the WARNING right away against a freshly-registered model (age ~0
-  already satisfies `age >= max-age-days - warning-lead-days` = 0). This only
-  affects that one process's log output, not what Prometheus/Grafana see.
-- **See the actual Prometheus alert and Grafana panel move** — this needs
-  the *model* to look old, not just the script's threshold, so there's a
-  small dev-only helper for it,
-  [`scripts/dev_simulate_stale_model.py`](scripts/dev_simulate_stale_model.py)
-  (pokes MLflow's own SQLite store directly; not part of the production
-  pipeline):
-  ```bash
-  docker cp scripts/dev_simulate_stale_model.py demand-forecast-mlflow:/tmp/sim.py
-  docker exec demand-forecast-mlflow python /tmp/sim.py --age-days 6
-  docker compose restart api   # API only reads the timestamp at startup
-  ```
-  Within one scrape (~15s) `demand_forecast_production_model_age_days` reads
-  `6.0`, the "Production model age (days)" panel in Grafana
-  (http://localhost:3000 → "Demand Forecast API") turns yellow, and
-  `ProductionModelApproachingStaleness` shows up **pending** at
-  http://localhost:9090/alerts — **firing** (red) once its `for: 10m` window
-  elapses (verified end-to-end while building this, including watching it
-  reach `firing`). `--age-days 8` crosses into `ProductionModelStale`
-  instead. Reset with `--age-days 0`, or just retrain for a real timestamp.
+  logs the WARNING immediately against a freshly-registered model (age ~0
+  already satisfies `age >= max-age-days - warning-lead-days` = 0). Drop
+  `--max-age-days` to `0` instead to see it actually retrain.
+- **See it in Grafana**: http://localhost:3000 → "Demand Forecast API"
+  dashboard → "Production model age (days)" panel goes green→yellow→red at
+  the 5/7-day thresholds; http://localhost:9090/alerts shows
+  `ProductionModelApproachingStaleness` / `ProductionModelStale` /
+  `ModelNotLoaded` alongside the original 5 rules. These reflect the real
+  registration age of whatever's currently `production`, so they only move
+  once that model is genuinely old (or after a real retrain).
+
+> **Note:** the WARNING log line above is instant because it only depends on
+> `--max-age-days`/`--warning-lead-days`, not on the model's actual age. The
+> Prometheus/Grafana side reads `demand_forecast_production_model_age_days`,
+> which is computed from the `production` model version's real MLflow
+> registration timestamp — so to make *that* move without waiting days,
+> you'd need to backdate it: connect to MLflow's SQLite backend
+> (`mlflow.db` locally, or inside the `mlflow` container at
+> `/mlflow/mlflow.db`) and `UPDATE model_versions SET creation_time = ?
+> WHERE name = 'demand-forecast-lgbm' AND version = (SELECT version FROM
+> registered_model_aliases WHERE name = 'demand-forecast-lgbm' AND alias =
+> 'production')`, with `creation_time` in epoch-milliseconds N days in the
+> past, then `docker compose restart api` so it re-reads the timestamp. Not
+> included as a script here since it pokes MLflow's internal schema
+> directly rather than any public API — treat it as a one-off dev/demo tool
+> if you build it, not something to wire into the app.
 
 ## What's implemented
 
