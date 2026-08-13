@@ -46,8 +46,10 @@ See [docs/USER_GUIDE.md](docs/USER_GUIDE.md) for full setup instructions.
 Quick version:
 
 ```bash
-python3.10 -m venv .venv
-.venv/Scripts/activate        # Windows: .venv\Scripts\Activate.ps1
+python3 -m venv .venv
+# macOS / Linux: source .venv/bin/activate
+# Windows (PowerShell): .venv\Scripts\Activate.ps1
+# Windows (CMD): .venv\Scripts\activate.bat
 pip install -r requirements-dev.txt
 pip install -e .              # installs demand_forecast in editable mode (needed to import it)
 python scripts/setup_data.py  # extracts the Kaggle dataset zip into data/raw/

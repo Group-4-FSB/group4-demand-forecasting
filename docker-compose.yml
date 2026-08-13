@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile.mlflow
     container_name: demand-forecast-mlflow
     ports:
-      - "5000:5000"
+      - "${MLFLOW_PORT:-5001}:5000"
     volumes:
       - mlflow_data:/mlflow
     networks:

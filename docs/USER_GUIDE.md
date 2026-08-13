@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Python **3.10** (project pins to this version — see `pyproject.toml`)
+- Python **>= 3.10** (project supports Python 3.10 and 3.11 — see `pyproject.toml`)
 - Docker Desktop (for the full stack: API + MLflow + Prometheus + Grafana)
 - The Kaggle dataset zip `walmart_sales.zip` in the project root (already
   provided with this assignment)
@@ -10,13 +10,18 @@
 ## 1. Local development (no Docker)
 
 ```bash
-# 1. Create and activate a Python 3.10 virtual environment
-python3.10 -m venv .venv
+# 1. Create and activate a Python virtual environment
+python3 -m venv .venv
+# macOS / Linux:
+source .venv/bin/activate
 # Windows (PowerShell):
 .venv\Scripts\Activate.ps1
-# Windows (Git Bash) / macOS / Linux:
-source .venv/Scripts/activate   # or .venv/bin/activate on macOS/Linux
+# Windows (CMD):
+.venv\Scripts\activate.bat
+```
+> **Note for Windows (PowerShell):** If script execution is blocked, run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process` first.
 
+```bash
 # 2. Install dependencies (+ demand_forecast itself, in editable mode —
 #    without this, `import demand_forecast` / `uvicorn demand_forecast...`
 #    fails with ModuleNotFoundError since it lives under src/)
@@ -39,7 +44,8 @@ uvicorn demand_forecast.api.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 `Makefile` wraps the common commands (`make setup`, `make data`, `make
-train`, `make api`, `make test`) if you prefer.
+train`, `make api`, `make test`) if you prefer (on Windows without native `make`,
+run the `python`/`pip` commands directly or use Git Bash / WSL).
 
 ## 2. Full stack via Docker Compose
 
@@ -60,6 +66,7 @@ docker compose ps   # wait for STATUS = healthy
 # 2. Point training at the Dockerized MLflow and register a model into it
 export MLFLOW_TRACKING_URI=http://localhost:5000
 # Windows (PowerShell): $env:MLFLOW_TRACKING_URI = "http://localhost:5000"
+# Windows (CMD): set MLFLOW_TRACKING_URI=http://localhost:5000
 python scripts/run_pipeline.py
 # Trains in well under a minute on this dataset (~6.4K rows).
 
@@ -145,6 +152,8 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| `cannot be loaded because running scripts is disabled on this system` (Windows PowerShell) | PowerShell Script Execution Policy restricts running `.ps1` scripts | Run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process` in PowerShell |
+| `make: command not found` (Windows) | Windows doesn't include `make` by default | Run the `python`/`pip` commands directly as shown in §1, or run `make` inside Git Bash / WSL / Chocolatey |
 | `ModuleNotFoundError: No module named 'demand_forecast'` | The package under `src/` was never installed into the venv (`pip install -r requirements-dev.txt` alone does **not** do this) | Run `pip install -e .` once per venv (already included in `make setup` and §1 above) |
 | `FileNotFoundError: Missing raw file ...` | Dataset not extracted yet | `python scripts/setup_data.py` |
 | API `/health` returns `"status": "degraded"` | No model has been trained/registered yet, or `data/processed/` is empty | Run `python scripts/run_pipeline.py`, then restart the API |

@@ -6,7 +6,7 @@
 
 <!-- Replace <YOUR_GH_ORG>/<YOUR_GH_REPO> once pushed to GitHub -->
 ![CI](https://github.com/<YOUR_GH_ORG>/<YOUR_GH_REPO>/actions/workflows/ci.yml/badge.svg)
-![Python](https://img.shields.io/badge/python-3.10-blue)
+![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Coverage](https://img.shields.io/badge/coverage-%E2%89%A596%25-brightgreen)
 
@@ -133,9 +133,10 @@ Fastest loop for iterating on the ML pipeline — everything runs directly on
 your machine against a local `sqlite:///mlflow.db`.
 
 ```bash
-# 1. Python 3.10 venv + deps
-python3.10 -m venv .venv && source .venv/Scripts/activate
-# Windows (PowerShell): py -3.10 -m venv .venv ; .venv\Scripts\Activate.ps1
+# 1. Python venv + deps (Python >=3.10)
+python3 -m venv .venv && source .venv/bin/activate
+# Windows (PowerShell): py -m venv .venv ; .venv\Scripts\Activate.ps1
+# Windows (CMD): py -m venv .venv && .venv\Scripts\activate.bat
 pip install -r requirements-dev.txt
 pip install -e .   # installs demand_forecast in editable mode (needed to import it)
 
@@ -166,15 +167,16 @@ MLflow (its own tracking server, not the local `mlflow.db` above) + a
 + Prometheus + Grafana. Requires **Docker Desktop running**.
 
 ```powershell
-# 1. Start MLflow first and wait for it to report healthy
+# 1. Start MLflow first and wait for it to report healthy before continuing
 docker compose up -d mlflow
-docker compose ps   # wait for STATUS = healthy before continuing
+docker compose ps   # wait for STATUS = healthy
 
 # 2. Point training at the Dockerized MLflow and register a model into IT
 #    (it has its own tracking store, separate from the local one above —
 #    the API container can only load a model that's registered here)
 $env:MLFLOW_TRACKING_URI = "http://localhost:5000"        # PowerShell
 # bash: export MLFLOW_TRACKING_URI=http://localhost:5000
+# cmd: set MLFLOW_TRACKING_URI=http://localhost:5000
 python scripts/run_pipeline.py
 
 # 3. Bring up the rest of the stack
