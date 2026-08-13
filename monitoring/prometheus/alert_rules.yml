@@ -45,3 +45,32 @@ groups:
         annotations:
           summary: "No prediction traffic in the last 15 minutes"
           description: "May indicate an upstream integration issue, or genuinely idle traffic."
+
+      - alert: ModelNotLoaded
+        expr: demand_forecast_model_loaded == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No production model is loaded — /api/v1/predict is returning 503"
+          description: "Either nothing has ever been registered/promoted, or the API couldn't reach the MLflow registry at startup. Train and register a model (python scripts/run_pipeline.py), then `docker compose restart api`."
+
+      # Thresholds below mirror the RETRAIN_MAX_AGE_DAYS=7 / RETRAIN_WARNING_LEAD_DAYS=2
+      # defaults in .env.example — if you change either env var, update these too.
+      - alert: ProductionModelApproachingStaleness
+        expr: demand_forecast_production_model_age_days >= 5 and demand_forecast_production_model_age_days < 7
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Production model is {{ printf \"%.1f\" $value }} day(s) old — approaching staleness"
+          description: "The scheduler auto-retrains once the model turns 7 days old (RETRAIN_MAX_AGE_DAYS) — currently {{ printf \"%.1f\" $value }} day(s) old, so only a couple of days left. Matches the WARNING logged by scripts/retrain_if_stale.py."
+
+      - alert: ProductionModelStale
+        expr: demand_forecast_production_model_age_days >= 7
+        for: 24h
+        labels:
+          severity: critical
+        annotations:
+          summary: "Production model is {{ printf \"%.1f\" $value }} day(s) old and still hasn't been refreshed"
+          description: "The `scheduler` container should have auto-retrained by now (RETRAIN_MAX_AGE_DAYS=7) — a full extra day past that with no promotion usually means either the scheduler container is down (`docker compose ps scheduler`) or every retrain attempt is being rejected by the quality gate (check MLflow runs tagged quality_gate=fail)."

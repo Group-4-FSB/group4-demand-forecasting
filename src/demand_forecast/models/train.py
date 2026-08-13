@@ -21,6 +21,7 @@ import mlflow
 import mlflow.lightgbm
 import numpy as np
 import pandas as pd
+from mlflow.exceptions import MlflowException
 from sklearn.model_selection import TimeSeriesSplit
 
 from demand_forecast.config import settings
@@ -78,6 +79,16 @@ def _ensure_experiment(name: str, artifact_root: str) -> None:
             Path(artifact_root).mkdir(parents=True, exist_ok=True)
             mlflow.create_experiment(name, artifact_location=Path(artifact_root).as_uri())
     mlflow.set_experiment(name)
+
+
+def get_current_production_version(client: mlflow.MlflowClient, model_name: str, alias: str):
+    """The ModelVersion currently aliased `alias`, or None if the model/alias
+    doesn't exist yet (e.g. before the very first registration). Shared by
+    the quality gate below and scripts/retrain_if_stale.py."""
+    try:
+        return client.get_model_version_by_alias(model_name, alias)
+    except MlflowException:
+        return None
 
 
 def prepare_training_frame(raw_dir: Path) -> pd.DataFrame:
@@ -298,31 +309,97 @@ def train_and_log(
     eval_model = _fit_lgbm(pool_df, feature_cols, best_params)
     test_preds = np.expm1(eval_model.predict(test_df[feature_cols]))
     test_metrics = evaluate_all(test_df[TARGET], test_preds)
+
+    # Quality gate: compare against whatever is currently aliased `production`
+    # (if register_model is False there is nothing to promote, so the gate is
+    # moot — always "passes" and training runs purely for inspection).
+    client = mlflow.MlflowClient()
+    current_prod_version = (
+        get_current_production_version(
+            client, settings.mlflow_model_name, settings.mlflow_model_alias
+        )
+        if register_model
+        else None
+    )
+    current_prod_test_rmsle: float | None = None
+    if current_prod_version is not None:
+        current_prod_test_rmsle = client.get_run(current_prod_version.run_id).data.metrics.get(
+            "test_rmsle"
+        )
+    # A new model must be at least as good — ties keep the incumbent's edge
+    # without blocking a same-quality refresh on more recent data.
+    gate_passed = (
+        current_prod_test_rmsle is None or test_metrics["rmsle"] <= current_prod_test_rmsle
+    )
+
     logger.info(
-        "Held-out test RMSLE: %.4f (naive baseline on the same weeks: %.4f)",
+        "Held-out test RMSLE: %.4f (naive baseline on the same weeks: %.4f)%s",
         test_metrics["rmsle"],
         baseline_test_metrics["rmsle"],
+        (
+            f" | current production: {current_prod_test_rmsle:.4f}"
+            if current_prod_test_rmsle is not None
+            else " | no current production model to compare against"
+        ),
     )
+
     with mlflow.start_run(run_name="holdout_test_evaluation"):
         mlflow.set_tag("model_type", "lightgbm_holdout_eval")
+        mlflow.set_tag("quality_gate", "pass" if gate_passed else "fail")
         mlflow.log_params(best_params)
         mlflow.log_param("test_weeks", test_weeks)
         mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
         mlflow.log_metrics({f"baseline_test_{k}": v for k, v in baseline_test_metrics.items()})
+        if current_prod_test_rmsle is not None:
+            mlflow.log_metric("current_production_test_rmsle", current_prod_test_rmsle)
 
-    # 3b. Refit on the FULL dataset (pool + test) with the same best params —
-    #     this is the model that actually gets logged/registered for serving.
-    logger.info("Retraining the production model on the full dataset (pool + test)...")
+    if not gate_passed:
+        logger.warning(
+            "%s\n"
+            "QUALITY GATE FAILED — NOT PROMOTING\n"
+            "  new model test_rmsle : %.4f\n"
+            "  current production   : %.4f\n"
+            "  '%s' alias is UNCHANGED — the existing production model keeps serving.\n"
+            "  No new version was registered for this run.\n"
+            "%s",
+            "=" * 70,
+            test_metrics["rmsle"],
+            current_prod_test_rmsle,
+            settings.mlflow_model_alias,
+            "=" * 70,
+        )
+        return {
+            "baseline_metrics": baseline_metrics,
+            "baseline_test_metrics": baseline_test_metrics,
+            "best_params": best_params,
+            "best_cv_rmsle": best_score,
+            "best_fold_metrics": best_fold_metrics,
+            "test_metrics": test_metrics,
+            "test_weeks": test_weeks,
+            "promoted": False,
+            "current_production_test_rmsle": current_prod_test_rmsle,
+            "run_id": None,
+            "model_uri": None,
+            "model": eval_model,
+            "feature_columns": feature_cols,
+        }
+
+    # 3b. Gate passed: refit on the FULL dataset (pool + test) with the same
+    #     best params — this is the model that actually gets registered.
+    logger.info("Quality gate passed. Retraining the production model on the full dataset...")
     final_model = _fit_lgbm(df, feature_cols, best_params)
     logger.info("Final model trained. Logging model + artifacts to MLflow...")
 
     with mlflow.start_run(run_name="best_lightgbm_final") as run:
         mlflow.set_tag("model_type", "lightgbm_final")
+        mlflow.set_tag("quality_gate", "pass")
         mlflow.log_params(best_params)
         mlflow.log_param("test_weeks", test_weeks)
         mlflow.log_metric("cv_mean_rmsle", best_score)
         mlflow.log_metrics({f"baseline_{k}": v for k, v in baseline_metrics.items()})
         mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
+        if current_prod_test_rmsle is not None:
+            mlflow.log_metric("previous_production_test_rmsle", current_prod_test_rmsle)
         mlflow.log_dict({"feature_columns": feature_cols}, "feature_columns.json")
 
         importances = pd.Series(
@@ -338,7 +415,6 @@ def train_and_log(
         final_run_id = run.info.run_id
 
     if register_model:
-        client = mlflow.MlflowClient()
         versions = client.search_model_versions(f"run_id='{final_run_id}'")
         if versions:
             client.set_registered_model_alias(
@@ -361,6 +437,8 @@ def train_and_log(
         "best_fold_metrics": best_fold_metrics,
         "test_metrics": test_metrics,
         "test_weeks": test_weeks,
+        "promoted": True,
+        "current_production_test_rmsle": current_prod_test_rmsle,
         "run_id": final_run_id,
         "model_uri": model_info.model_uri,
         "model": final_model,
@@ -373,12 +451,13 @@ def main() -> None:
     df = prepare_training_frame(settings.data_raw_dir)
     summary = train_and_log(df)
     logger.info("Training complete: %s", summary)
+    status = "PROMOTED to production" if summary["promoted"] else "REJECTED by quality gate"
     print(
         f"Baseline RMSLE={summary['baseline_metrics']['rmsle']:.4f} | "
         f"Best LightGBM CV RMSLE={summary['best_cv_rmsle']:.4f} | "
         f"Held-out test RMSLE={summary['test_metrics']['rmsle']:.4f} "
         f"(vs baseline {summary['baseline_test_metrics']['rmsle']:.4f} on same weeks) "
-        f"(params={summary['best_params']})"
+        f"(params={summary['best_params']}) -> {status}"
     )
 
 

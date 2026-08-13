@@ -1,10 +1,17 @@
 """End-to-end training pipeline entrypoint:
 ingest -> validate -> feature engineering -> train (+ tune, CV, held-out test,
-MLflow log) -> save reference snapshot for the serving API.
+quality gate, MLflow log) -> save reference snapshot for the serving API.
 
 The most recent `--test-weeks` weeks are held out and never used for training
 or hyperparameter selection — see `models.train.train_and_log` for the full
 three-stage split (pool for CV -> honest test eval -> refit on everything).
+The resulting candidate is only promoted to the `production` alias if it is
+at least as good, on that held-out test set, as whatever is already
+production — see the "quality gate" section of `train_and_log`.
+
+`run_training_pipeline()` is the reusable entrypoint (also used by
+`scripts/retrain_if_stale.py` for scheduled/automatic retraining); `main()`
+below is just its CLI wrapper.
 
 Usage:
     python scripts/run_pipeline.py [--n-param-samples 6] [--n-cv-splits 3] [--test-weeks 8]
@@ -16,6 +23,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -29,17 +37,21 @@ from demand_forecast.reporting import generate_responsible_ai_report  # noqa: E4
 
 logger = logging.getLogger(__name__)
 
+REPORTS_DIR = Path(__file__).resolve().parents[1] / "reports"
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--n-param-samples", type=int, default=6)
-    parser.add_argument("--n-cv-splits", type=int, default=settings.n_cv_splits)
-    parser.add_argument("--test-weeks", type=int, default=settings.test_holdout_weeks)
-    parser.add_argument("--no-register", action="store_true", help="Skip MLflow model registry")
-    args = parser.parse_args()
 
-    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(message)s")
+def run_training_pipeline(
+    n_param_samples: int = 6,
+    n_cv_splits: int = settings.n_cv_splits,
+    test_weeks: int = settings.test_holdout_weeks,
+    register_model: bool = True,
+) -> dict[str, Any]:
+    """Run the full pipeline once: ingest -> validate -> features -> train
+    (CV + held-out test + quality gate) -> reference snapshot -> Responsible
+    AI report (only if the new model was actually promoted).
 
+    Returns `train_and_log()`'s summary dict, with `reports_dir` added.
+    """
     logger.info("1/5 Loading raw data from %s", settings.data_raw_dir)
     df = load_walmart_sales(settings.data_raw_dir)
 
@@ -52,28 +64,56 @@ def main() -> int:
     logger.info("3/5 Feature engineering")
     features_df = build_features(df)
 
-    logger.info("4/5 Training + hyperparameter search + MLflow logging")
+    logger.info("4/5 Training + hyperparameter search + quality gate + MLflow logging")
     summary = train_and_log(
         features_df,
-        n_cv_splits=args.n_cv_splits,
+        n_cv_splits=n_cv_splits,
+        n_param_samples=n_param_samples,
+        register_model=register_model,
+        test_weeks=test_weeks,
+    )
+
+    if summary["promoted"]:
+        save_reference_artifacts(features_df, settings.data_processed_dir)
+        logger.info("Saved reference snapshot to %s", settings.data_processed_dir)
+
+        logger.info("5/5 Generating Responsible AI report (fairness + explainability)")
+        generate_responsible_ai_report(
+            model=summary["model"],
+            df=features_df,
+            feature_cols=summary["feature_columns"],
+            output_dir=REPORTS_DIR,
+            mlflow_run_id=summary["run_id"],
+        )
+        logger.info("Saved Responsible AI report to %s", REPORTS_DIR)
+        summary["reports_dir"] = REPORTS_DIR
+    else:
+        logger.info(
+            "5/5 Skipped reference snapshot + Responsible AI report — new model "
+            "was not promoted, so reports/ and data/processed/ still reflect the "
+            "current production model."
+        )
+        summary["reports_dir"] = None
+
+    return summary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--n-param-samples", type=int, default=6)
+    parser.add_argument("--n-cv-splits", type=int, default=settings.n_cv_splits)
+    parser.add_argument("--test-weeks", type=int, default=settings.test_holdout_weeks)
+    parser.add_argument("--no-register", action="store_true", help="Skip MLflow model registry")
+    args = parser.parse_args()
+
+    logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(message)s")
+
+    summary = run_training_pipeline(
         n_param_samples=args.n_param_samples,
-        register_model=not args.no_register,
+        n_cv_splits=args.n_cv_splits,
         test_weeks=args.test_weeks,
+        register_model=not args.no_register,
     )
-
-    save_reference_artifacts(features_df, settings.data_processed_dir)
-    logger.info("Saved reference snapshot to %s", settings.data_processed_dir)
-
-    logger.info("5/5 Generating Responsible AI report (fairness + explainability)")
-    reports_dir = Path(__file__).resolve().parents[1] / "reports"
-    generate_responsible_ai_report(
-        model=summary["model"],
-        df=features_df,
-        feature_cols=summary["feature_columns"],
-        output_dir=reports_dir,
-        mlflow_run_id=summary["run_id"],
-    )
-    logger.info("Saved Responsible AI report to %s", reports_dir)
 
     print("=" * 60)
     print(f"Baseline RMSLE (all data)   : {summary['baseline_metrics']['rmsle']:.4f}")
@@ -83,10 +123,16 @@ def main() -> int:
         f"Held-out TEST RMSLE         : {summary['test_metrics']['rmsle']:.4f}  "
         f"({summary['test_weeks']} weeks, never trained on)"
     )
+    if summary["current_production_test_rmsle"] is not None:
+        print(f"Current production RMSLE    : {summary['current_production_test_rmsle']:.4f}")
     print(f"Best params                 : {summary['best_params']}")
-    print(f"MLflow run id                : {summary['run_id']}")
-    print(f"MLflow model URI             : {summary['model_uri']}")
-    print(f"Reports directory            : {reports_dir}")
+    if summary["promoted"]:
+        print("Result                       : PROMOTED to production")
+        print(f"MLflow run id                : {summary['run_id']}")
+        print(f"MLflow model URI             : {summary['model_uri']}")
+        print(f"Reports directory            : {summary['reports_dir']}")
+    else:
+        print("Result                       : REJECTED by quality gate — production unchanged")
     print("=" * 60)
     return 0
 

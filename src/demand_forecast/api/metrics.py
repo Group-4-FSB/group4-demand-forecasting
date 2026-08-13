@@ -52,3 +52,22 @@ MODEL_INFO = Gauge(
     "Static info about the currently loaded model (value is always 1)",
     ["model_name", "model_alias"],
 )
+
+MODEL_LOADED = Gauge(
+    "demand_forecast_model_loaded",
+    "1 if a production model is currently loaded and serving, 0 if /health "
+    "is degraded (e.g. nothing registered yet, or the registry was unreachable "
+    "at startup)",
+)
+
+# Evaluated lazily at scrape time via .set_function() in api/main.py, so the
+# value is always current without polling MLflow on every 15s scrape — see
+# the ProductionModelApproachingStaleness / ProductionModelStale alerts in
+# monitoring/prometheus/alert_rules.yml, and the day-5/7 warning this backs
+# in scripts/retrain_if_stale.py.
+PRODUCTION_MODEL_AGE_DAYS = Gauge(
+    "demand_forecast_production_model_age_days",
+    "Age in days of the model version currently aliased 'production' in "
+    "MLflow. NaN if no production model is registered (nothing to compare "
+    "against, so the retrain scheduler always promotes the next candidate).",
+)

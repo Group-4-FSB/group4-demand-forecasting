@@ -16,6 +16,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: demand-forecast-api:latest
     container_name: demand-forecast-api
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -35,6 +36,42 @@ services:
     depends_on:
       mlflow:
         condition: service_healthy
+    networks:
+      - forecast-net
+    restart: unless-stopped
+
+  # Business rule: production must never go more than RETRAIN_MAX_AGE_DAYS
+  # without an attempted refresh. Checks staleness once a day; reads whatever
+  # is currently in data/raw/ (kept fresh by an external ML-engineering data
+  # pipeline — out of scope here) and only ever promotes through the same
+  # quality gate as a manual `run_pipeline.py` run. Reuses the `api` image —
+  # no separate Dockerfile needed.
+  scheduler:
+    image: demand-forecast-api:latest
+    container_name: demand-forecast-scheduler
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: demand-forecast
+      MLFLOW_MODEL_NAME: demand-forecast-lgbm
+      MLFLOW_MODEL_ALIAS: production
+      DATA_RAW_DIR: /app/data/raw
+      DATA_PROCESSED_DIR: /app/data/processed
+      RETRAIN_MAX_AGE_DAYS: "7"
+      RETRAIN_WARNING_LEAD_DAYS: "2"
+      LOG_LEVEL: INFO
+    volumes:
+      # data/raw is read-only here — refreshing it is the ML Engineer's data
+      # pipeline's job, not this service's. data/processed and reports/ are
+      # written by a promoted retrain, same as a manual run_pipeline.py call.
+      - ./data/raw:/app/data/raw:ro
+      - ./data/processed:/app/data/processed
+      - ./reports:/app/reports
+    command: ["python", "scripts/retrain_if_stale.py", "--loop", "--check-interval-hours", "24"]
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_started
     networks:
       - forecast-net
     restart: unless-stopped

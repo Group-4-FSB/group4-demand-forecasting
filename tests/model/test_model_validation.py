@@ -37,6 +37,16 @@ def test_trained_model_has_honest_holdout_test_metrics(trained_summary):
     assert trained_summary["baseline_test_metrics"]["rmsle"] > 0
 
 
+def test_first_ever_registration_is_always_promoted(trained_summary):
+    # trained_summary is this test session's first (and only, per session)
+    # training run for its isolated model name, so there is nothing to gate
+    # against yet — the quality gate must let it through unconditionally.
+    assert trained_summary["promoted"] is True
+    assert trained_summary["current_production_test_rmsle"] is None
+    assert trained_summary["run_id"] is not None
+    assert trained_summary["model_uri"] is not None
+
+
 def test_trained_model_predictions_are_non_negative(trained_summary, features_df):
     model = trained_summary["model"]
     feature_cols = trained_summary["feature_columns"]

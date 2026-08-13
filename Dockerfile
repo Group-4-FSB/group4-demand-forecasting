@@ -20,6 +20,7 @@ WORKDIR /app
 
 COPY --from=builder /root/.local /home/appuser/.local
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 COPY pyproject.toml ./
 
 ENV PATH=/home/appuser/.local/bin:$PATH \
@@ -28,7 +29,7 @@ ENV PATH=/home/appuser/.local/bin:$PATH \
     API_HOST=0.0.0.0 \
     API_PORT=8000
 
-RUN mkdir -p /app/data/processed && chown -R appuser:appuser /app
+RUN mkdir -p /app/data/processed /app/data/raw /app/reports && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8000

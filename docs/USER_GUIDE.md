@@ -63,7 +63,7 @@ export MLFLOW_TRACKING_URI=http://localhost:5000
 python scripts/run_pipeline.py
 # Trains in well under a minute on this dataset (~6.4K rows).
 
-# 3. Bring up the rest of the stack (api, prometheus, grafana)
+# 3. Bring up the rest of the stack (api, scheduler, prometheus, grafana)
 docker compose up --build
 ```
 
@@ -77,6 +77,7 @@ already allocated".
 | API (health) | http://localhost:8000/health | Liveness/readiness |
 | API (metrics) | http://localhost:8000/metrics | Raw Prometheus exposition format |
 | MLflow | http://localhost:5000 | Experiments, runs, model registry |
+| `scheduler` | *(no exposed port)* | Background container; checks daily whether `production` is ≥ `RETRAIN_MAX_AGE_DAYS` old and, if so, triggers a retrain attempt — `docker logs demand-forecast-scheduler` to watch it. Logs a WARNING from `RETRAIN_WARNING_LEAD_DAYS` (default 2) days before that; same signal is scraped as `demand_forecast_production_model_age_days` and alertable in Prometheus/Grafana |
 | Prometheus | http://localhost:9090 | Query metrics, see `/alerts` for firing rules |
 | Grafana | http://localhost:3000 | Login `admin` / `admin` (change for anything beyond local grading demo); dashboard "Demand Forecast API" is pre-provisioned |
 
@@ -114,19 +115,31 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
    `MLFLOW_TRACKING_URI` pointed at the running `mlflow` container as above).
    Each run: holds out the most recent `TEST_HOLDOUT_WEEKS` (default 8) weeks,
    picks the best LightGBM hyperparameters via CV on everything before that,
-   scores them once on the held-out weeks for an honest `test_rmsle`, then
-   refits on 100% of the data — that final model is what gets registered and
-   aliased `production`, automatically replacing the previous alias target.
-   See [README.md § Train / CV / Test split](../README.md#train--cv--test-split)
-   for the full walkthrough, and pass `--test-weeks N` to change the holdout size.
+   scores them once on the held-out weeks for an honest `test_rmsle`, then —
+   **only if that `test_rmsle` is at least as good as the current
+   `production` model's** — refits on 100% of the data and registers/aliases
+   it `production`. A worse candidate is silently *not* registered; the
+   pipeline exits with `REJECTED by quality gate — production unchanged` and
+   the run is tagged `quality_gate=fail` in MLflow. See
+   [README.md § Quality gate & scheduled retraining](../README.md#quality-gate--scheduled-retraining)
+   for the full mechanism, and pass `--test-weeks N` to change the holdout size.
 2. **Restart the API container** so it picks up the newly-aliased model:
    `docker compose restart api` (the service loads the model once at
    startup — see the trade-offs note in ARCHITECTURE.md; a hot-reload
-   endpoint is a natural next enhancement but out of scope here).
+   endpoint is a natural next enhancement but out of scope here). Not needed
+   if the gate rejected the candidate — there's nothing new to load.
 3. Compare runs in the MLflow UI before trusting a promotion — the pipeline
-   always registers the best candidate from that run, but nothing stops you
-   from manually re-aliasing an older, better-understood version via the
-   MLflow UI or `MlflowClient.set_registered_model_alias(...)`.
+   only *auto*-promotes a strictly-better-or-tying candidate, but nothing
+   stops you from manually re-aliasing an older, better-understood version
+   via the MLflow UI or `MlflowClient.set_registered_model_alias(...)`.
+4. **This also happens automatically.** The `scheduler` container (started
+   as part of `docker compose up` in §2) checks once a day whether
+   `production` is ≥ `RETRAIN_MAX_AGE_DAYS` (default 7) days old and, if so,
+   runs step 1 for you against whatever is currently in `data/raw/` —
+   keeping that folder fresh is assumed to be handled by an external data
+   pipeline. A scheduler-triggered retrain still goes through the same gate
+   above, so staleness alone can never push a worse model into production.
+   One-off / cron use outside Docker: `python scripts/retrain_if_stale.py`.
 
 ## 4. Troubleshooting
 
@@ -142,3 +155,7 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
 | Port already in use (`8000`/`5000`/`9090`/`3000`) | Another process/compose stack is already bound | Stop the conflicting process, or change the left-hand port in `docker-compose.yml`'s `ports:` mapping |
 | Tests are slow / hang | Full dataset accidentally used instead of `tests/fixtures/` | Tests should only ever read from `tests/fixtures/` (see `tests/conftest.py`) — check you haven't changed `raw_dir` in a fixture |
 | `run_pipeline.py` seems to pause briefly after `"Will assume non-transactional DDL"` | Normal — that's the last log line before hyperparameter search/CV; on this dataset (~6.4K rows) the whole run finishes in well under a minute, so any pause here is brief | If it's genuinely frozen for minutes (0% CPU, no progress, and `mlflow.db` stays exclusively locked with no growth), kill the process and re-run — a real hang here usually means another process already had `mlflow.db` open (e.g. two training runs launched at once, or `mlflow ui` pointed at the same file) |
+| A retrain ran (manually or via `scheduler`) but the API still serves the old predictions | The API only loads the model once, at container startup — see step 2 in §3 | `docker compose restart api` |
+| `scheduler` container logs show nothing happening for days | Expected if `production` is still fresh — it logs `Production model is N day(s) old ... Nothing to do.` on every check, switches to a WARNING once within `RETRAIN_WARNING_LEAD_DAYS` of the limit, and only retrains once the age crosses `RETRAIN_MAX_AGE_DAYS` | `docker logs demand-forecast-scheduler`; lower `RETRAIN_MAX_AGE_DAYS` (env var in `docker-compose.yml`) if you want to demo it sooner |
+| `ProductionModelStale` firing in Prometheus even though `scheduler` looks fine | A retrain has been *attempted* (per the scheduler logs) but every attempt is being rejected by the quality gate — the age clock only resets on an actual promotion | Check MLflow runs tagged `quality_gate=fail`; either the data genuinely hasn't improved the model, or something about the raw data changed for the worse — this is the alert working as intended, not a bug |
+| `docker compose up` hangs indefinitely at `Container ... Creating` (any service, not just `scheduler`) | A previous `docker`/`docker compose` CLI invocation was killed (e.g. Ctrl+C, a tool timeout) without the *process itself* exiting, and it's still holding a client connection the daemon is serialized behind | Find and kill the stale client processes (Windows: `Get-Process docker,docker-compose \| Stop-Process -Force`), then retry — Docker Desktop's engine itself is usually fine, it's the leaked CLI client that's stuck |

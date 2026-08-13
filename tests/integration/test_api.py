@@ -105,6 +105,21 @@ def test_metrics_endpoint_includes_custom_ml_metrics(api_client):
     assert "demand_forecast_model_info" in body
 
 
+def test_metrics_endpoint_reports_model_loaded_and_fresh_age(api_client):
+    r = api_client.get("/metrics")
+    body = r.text
+    assert "demand_forecast_model_loaded 1.0" in body
+
+    age_line = next(
+        line
+        for line in body.splitlines()
+        if line.startswith("demand_forecast_production_model_age_days ")
+    )
+    age_value = float(age_line.split()[-1])
+    # api_client's model was just registered by the trained_summary fixture.
+    assert 0.0 <= age_value < (10.0 / 1440.0)  # under 10 minutes, expressed in days
+
+
 def test_docs_endpoint_available(api_client):
     r = api_client.get("/docs")
     assert r.status_code == 200

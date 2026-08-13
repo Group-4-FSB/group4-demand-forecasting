@@ -58,6 +58,17 @@ class Settings:
     # one-time honest accuracy check before the final model is refit on 100%
     # of the data and promoted — see models/train.py chronological_holdout_split.
     test_holdout_weeks: int = field(default_factory=lambda: int(_env("TEST_HOLDOUT_WEEKS", "8")))
+    # scripts/retrain_if_stale.py: force a retrain attempt once the current
+    # production model is at least this many days old.
+    retrain_max_age_days: int = field(
+        default_factory=lambda: int(_env("RETRAIN_MAX_AGE_DAYS", "7"))
+    )
+    # scripts/retrain_if_stale.py: start logging a heads-up WARNING once the
+    # production model is within this many days of retrain_max_age_days, e.g.
+    # default 7/2 -> a warning from day 5 ("2 day(s) left") through day 7.
+    retrain_warning_lead_days: int = field(
+        default_factory=lambda: int(_env("RETRAIN_WARNING_LEAD_DAYS", "2"))
+    )
 
 
 settings = Settings()

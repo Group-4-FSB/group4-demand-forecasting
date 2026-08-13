@@ -13,7 +13,9 @@ from __future__ import annotations
 import logging
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
+import mlflow
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -21,10 +23,12 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from demand_forecast import __version__
 from demand_forecast.api.metrics import (
     MODEL_INFO,
+    MODEL_LOADED,
     PREDICTED_SALES_VALUE,
     PREDICTION_ERRORS_TOTAL,
     PREDICTION_LATENCY_SECONDS,
     PREDICTIONS_TOTAL,
+    PRODUCTION_MODEL_AGE_DAYS,
 )
 from demand_forecast.api.schemas import (
     BatchPredictRequest,
@@ -35,22 +39,50 @@ from demand_forecast.api.schemas import (
 )
 from demand_forecast.config import settings
 from demand_forecast.models.predict import PredictionService, UnknownStoreError
+from demand_forecast.models.train import get_current_production_version
 
 logger = logging.getLogger(__name__)
 
 
+def _production_model_age_days() -> float:
+    """Callback evaluated at Prometheus scrape time (see .set_function()
+    below) — pure local arithmetic against the timestamp cached at startup,
+    so a scrape never blocks on an MLflow round trip."""
+    created_at = getattr(app.state, "production_model_created_at", None)
+    if created_at is None:
+        return float("nan")
+    return (datetime.now(timezone.utc) - created_at).total_seconds() / 86400.0
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.production_model_created_at = None
     try:
         app.state.prediction_service = PredictionService.load()
         MODEL_INFO.labels(
             model_name=settings.mlflow_model_name, model_alias=settings.mlflow_model_alias
         ).set(1)
+        MODEL_LOADED.set(1)
         logger.info("Model loaded: %s@%s", settings.mlflow_model_name, settings.mlflow_model_alias)
+
+        try:
+            client = mlflow.MlflowClient()
+            mv = get_current_production_version(
+                client, settings.mlflow_model_name, settings.mlflow_model_alias
+            )
+            if mv is not None:
+                app.state.production_model_created_at = datetime.fromtimestamp(
+                    mv.creation_timestamp / 1000, tz=timezone.utc
+                )
+        except Exception:
+            # Non-fatal: the model is already loaded and serving fine, this
+            # only affects the age gauge / staleness alerts.
+            logger.exception("Failed to fetch production model registration time")
     except Exception:
         # Service starts even if the model isn't trained/registered yet so
         # /health can report the problem instead of the container crash-looping.
         app.state.prediction_service = None
+        MODEL_LOADED.set(0)
         logger.exception("Failed to load prediction model at startup")
     yield
 
@@ -61,6 +93,8 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+PRODUCTION_MODEL_AGE_DAYS.set_function(_production_model_age_days)
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
