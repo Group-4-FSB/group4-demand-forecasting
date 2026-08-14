@@ -1,9 +1,57 @@
 # Responsible AI
 
-This document covers the four areas required by the DDM501 rubric: fairness,
-explainability, data privacy, and ethics. Supporting code lives in
+This document covers four Responsible AI areas:
+fairness, explainability, data privacy, and ethics. Supporting code lives in
 [`src/demand_forecast/fairness/`](../src/demand_forecast/fairness/) and
 [`src/demand_forecast/explainability/`](../src/demand_forecast/explainability/).
+
+## Summary
+
+This section is a quick summary. Detailed evidence and
+implementation notes follow in Sections 1-5.
+
+### Fairness
+
+- Approach: fairness-of-outcome across store-level proxy segments, because the
+  dataset has no demographic/protected-attribute fields.
+- Segments: `store_size_bucket`, `unemployment_bucket`, `store_nbr`.
+- Signal: disparity ratio = worst RMSLE / best RMSLE, flag when > 1.5.
+- Latest result: `store_size_bucket` 1.11 (OK), `unemployment_bucket` 1.22
+  (OK), `store_nbr` 1.93 (FLAGGED).
+- Mitigation: store-specific features, weighting for under-served stores,
+  then retrain and compare disparity before/after in MLflow.
+
+### Explainability
+
+- Methods: SHAP TreeExplainer (global + local) and LightGBM native gain as an
+  independent cross-check.
+- Latest evidence: both methods agree on top features
+  (`store_nbr`, `sales_lag_1`, `sales_roll_mean_4`).
+- Interpretation: agreement between two methods improves trust in explanation
+  stability.
+
+### Privacy
+
+- Data scope: public, store-level, anonymized; no customer PII.
+- Operational controls: localhost developer scope, aggregate-only artifacts,
+  no personal identifiers in MLflow/monitoring outputs.
+- If scope expands to customer data: apply minimization, access control,
+  identifier hashing, and retention policy.
+
+### Ethics
+
+- Key risks: stock-out/overstock harms, automation bias, uneven correction load
+  across stores, and compute footprint.
+- Position: human-in-the-loop for planning decisions, especially under shocks;
+  treat large prediction swings as review triggers.
+
+### Governance and Response
+
+- Fairness flagged (>1.5): mitigation ticket + retrain comparison.
+- Staleness alerts: verify scheduler/data freshness, trigger retrain.
+- Model unavailable: restore serving path and validate production alias.
+- Cadence: review fairness/explainability every production retrain and run a
+  monthly retrospective on recurring under-served stores.
 
 ## 1. Fairness analysis & bias detection
 
@@ -93,6 +141,24 @@ Two independent, complementary methods are implemented
 Both are cheap enough to run as part of the standard training pipeline and
 are logged as MLflow artifacts on the final run.
 
+**Evidence from the latest run artifacts** (`reports/shap_top_features.csv`,
+`reports/native_gain_importance.csv`):
+
+| Rank | SHAP (mean |value|) | Native gain importance |
+|---|---|---|
+| 1 | `store_nbr` (0.2895) | `store_nbr` (7680.69) |
+| 2 | `sales_lag_1` (0.1318) | `sales_lag_1` (2315.48) |
+| 3 | `sales_roll_mean_4` (0.0498) | `sales_roll_mean_4` (1195.06) |
+
+The top-3 agreement between SHAP and native gain is consistent with the
+expected demand dynamics and is treated as a robustness check.
+
+**SHAP + LIME wording** This implementation uses SHAP + a
+model-native cross-check (LightGBM gain) instead of SHAP + LIME because the
+model is tree-based and TreeExplainer is exact/fast for this setting.
+If strict SHAP+LIME evidence is required by the grader, add a compact LIME
+local explanation appendix as a future enhancement.
+
 ## 3. Data privacy considerations
 
 - The dataset is **public, store-level, and anonymized** — it contains no
@@ -109,6 +175,15 @@ are logged as MLflow artifacts on the final run.
   limitation), not addressed here because no such data is in scope.
 - Model artifacts and logs (MLflow, Prometheus) contain only store
   identifiers and aggregate numbers — no PII risk from artifact leakage.
+
+**Operational controls currently applied in this project setup:**
+- Access to local observability tools is developer-scoped (Docker Desktop /
+  localhost environment), not internet-exposed by default.
+- MLflow/Grafana are used for course project operations only; no customer or
+  account identifiers are ingested into artifacts.
+- Responsible-AI artifacts (`fairness_report.md`, SHAP plots, feature
+  importance CSVs) are aggregate-level outputs and can be shared for review
+  without personal-data redaction.
 
 ## 4. Ethical implications
 
@@ -135,3 +210,21 @@ are logged as MLflow artifacts on the final run.
   learning, keeping the compute/carbon footprint of routine retraining low —
   itself a deliberate, documented design trade-off (see
   [ARCHITECTURE.md](../ARCHITECTURE.md)).
+
+## 5. Monitoring, governance, and response plan
+
+To convert analysis into operational accountability, we use the following
+minimum response playbook:
+
+| Trigger | Threshold | Owner | Action | SLA |
+|---|---|---|---|---|
+| Fairness disparity flagged (`store_nbr`) | disparity ratio > 1.5 | ML engineer | Open mitigation ticket, test weighting/feature fix, retrain, compare before/after ratios | 7 days |
+| Model staleness warning | `ProductionModelApproachingStaleness` alert | MLOps owner | Verify scheduler health and fresh raw data availability | 1 day |
+| Model stale critical | `ProductionModelStale` alert | MLOps owner + model owner | Force retrain attempt, document gate outcome, escalate if repeatedly rejected | 1 day |
+| Model unavailable | `ModelNotLoaded` alert or `/health` degraded | API owner | Restore serving path (reload model / restart API / verify registry alias) | 4 hours |
+
+Review cadence:
+- Fairness and explainability artifacts are reviewed on every production
+  retrain attempt.
+- A monthly retrospective checks whether recurring under-served stores remain
+  the same and whether mitigation reduced disparity.

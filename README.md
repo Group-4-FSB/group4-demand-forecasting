@@ -296,6 +296,68 @@ here's how to see them fire in seconds instead of days:
 > directly rather than any public API — treat it as a one-off dev/demo tool
 > if you build it, not something to wire into the app.
 
+### Comprehensive system and ML metrics (including custom metrics)
+
+The project tracks metrics across four layers so operational health and model
+quality are both observable.
+
+```mermaid
+flowchart LR
+  subgraph Serving[Online Serving Path]
+    Client[Client]
+    API[FastAPI]
+    Model[PredictionService + Model]
+    Client --> API --> Model
+  end
+
+  subgraph Obs[Observability]
+    Metrics[/metrics endpoint]
+    Prom[Prometheus]
+    Alerts[Alert Rules]
+    Graf[Grafana]
+  end
+
+  subgraph Train[Offline Training and Governance]
+    Pipeline[Training Pipeline]
+    Eval[Baseline + CV + Held-out Test]
+    Gate[Quality Gate]
+    Fair[Fairness Report]
+    MLflow[MLflow Registry]
+  end
+
+  API --> Metrics --> Prom
+  Prom --> Alerts
+  Prom --> Graf
+
+  Pipeline --> Eval --> Gate --> MLflow
+  Pipeline --> Fair
+  MLflow -.production alias.-> Model
+
+  Prom -.monitoring signal.-> Gate
+  Fair -.responsible AI signal.-> Gate
+```
+
+| Layer | Metric | Type | Formula / definition | Threshold / alert | Action when breached |
+|---|---|---|---|---|---|
+| **Service availability** | `up{job="demand-forecast-api"}` | System | API scrape health from Prometheus | `APIDown`: `up == 0` for 1m | Check container/process health, logs, and network |
+| **HTTP reliability** | HTTP 5xx error rate | System | $\frac{\sum rate(http\_requests\_total\{status=~"5.."\}[5m])}{\sum rate(http\_requests\_total[5m])}$ | `HighHTTPErrorRate` > 5% for 5m | Investigate stack traces and dependency failures |
+| **Inference latency (p95)** | `demand_forecast_prediction_latency_seconds` | Custom ML-serving | Model-only latency histogram (excludes HTTP overhead) | `HighPredictionLatencyP95` > 0.5s for 5m | Profile predict path, model load state, and host resources |
+| **Prediction failures** | `demand_forecast_prediction_errors_total{reason=*}` | Custom ML-serving | Failed predictions by reason (e.g., `unknown_store`) | `HighPredictionErrorRate` > 0.5 errors/sec for 5m | Validate request payloads and reference snapshot coverage |
+| **Traffic health** | `demand_forecast_predictions_total{store_nbr=*}` | Custom ML-serving | Successful predictions served | `NoPredictionTraffic` = 0 rate for 15m | Verify upstream integration / client traffic |
+| **Model readiness** | `demand_forecast_model_loaded` | Custom ML-serving | Gauge: 1 if serving model is loaded, else 0 | `ModelNotLoaded` = 0 for 2m | Train/register model and restart API |
+| **Model freshness** | `demand_forecast_production_model_age_days` | Custom governance | Age of current `production` alias model in days | `ProductionModelApproachingStaleness`: 5-7 days; `ProductionModelStale`: >=7 days for 24h | Check scheduler health, retrain outcome, and quality gate rejects |
+| **Primary model quality** | RMSLE | Offline ML | $RMSLE = \sqrt{\frac{1}{n}\sum_i (\log(1+\hat{y}_i)-\log(1+y_i))^2}$ | Compared against baseline and production RMSLE | Promote only if candidate <= current production |
+| **Secondary model quality** | MAE, RMSE | Offline ML | $MAE = \frac{1}{n}\sum_i |\hat{y}_i-y_i|$, $RMSE = \sqrt{\frac{1}{n}\sum_i (\hat{y}_i-y_i)^2}$ | Tracked per run and segment | Diagnose magnitude vs. relative error behavior |
+| **Fairness parity** | Disparity ratio by segment | Custom Responsible AI | $\frac{\max(RMSLE_{segment})}{\min(RMSLE_{segment})}$ across `store_size_bucket`, `unemployment_bucket`, `store_nbr` | Flag when > 1.5 | Open mitigation task (features/weighting), retrain, compare before/after |
+
+Where these are implemented:
+
+- Custom online metrics: `src/demand_forecast/api/metrics.py`
+- Alert logic: `monitoring/prometheus/alert_rules.yml`
+- Offline evaluation metrics: `src/demand_forecast/models/evaluate.py`
+- Quality gate + promotion logic: `src/demand_forecast/models/train.py`
+- Fairness disparity metrics: `src/demand_forecast/fairness/fairness_report.py`
+
 ### What's implemented
 
 | Area | Highlights |
