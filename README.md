@@ -108,6 +108,28 @@ Implementation references:
 - [`monitoring/prometheus/alert_rules.yml`](monitoring/prometheus/alert_rules.yml)
 - [`tests/model/test_quality_gate.py`](tests/model/test_quality_gate.py)
 
+### Data lineage
+
+`data/raw/Walmart_Sales.csv` has no version control of its own (gitignored —
+too large/licensed to commit, and would only grow). To still be able to trace
+a served model back to exactly which data snapshot produced it, every
+training run computes a fingerprint of the raw file — SHA256 of its exact
+bytes, row count, and `(min_date, max_date)` coverage — and logs it as tags
+(`raw_data_sha256`, `raw_data_rows`, `raw_data_min_date`,
+`raw_data_max_date`, `raw_data_n_stores`) on the two runs that matter most:
+`holdout_test_evaluation` (the quality-gate decision) and
+`best_lightgbm_final` (the model actually registered). This is distinct from
+a run's own `start_time` — that answers *when training happened*; the
+fingerprint answers *which data, current as of which week, it happened on*
+— together with MLflow's own auto-logged `mlflow.source.git.commit` tag,
+this pins the full (code, data, params) triple behind any served model.
+
+Implementation reference:
+[`compute_raw_data_fingerprint()`](src/demand_forecast/data/ingest.py) in
+`data/ingest.py`, called from `run_training_pipeline()` in
+[`scripts/run_pipeline.py`](scripts/run_pipeline.py) and threaded through to
+`train_and_log()`.
+
 ## Operations
 
 ### Local Development (no Docker)

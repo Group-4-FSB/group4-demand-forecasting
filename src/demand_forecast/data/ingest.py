@@ -13,8 +13,10 @@ ARCHITECTURE.md and docs/RESPONSIBLE_AI.md for how that's used).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -58,3 +60,26 @@ def load_walmart_sales(raw_dir: Path) -> pd.DataFrame:
         df["date"].max().date(),
     )
     return df
+
+
+def compute_raw_data_fingerprint(raw_dir: Path, df: pd.DataFrame) -> dict[str, Any]:
+    """A data-version fingerprint for the raw source file, meant to be logged
+    onto every training run (see `models/train.py`).
+
+    A run's own MLflow `start_time` only answers "when did training happen" —
+    it says nothing about which content of `data/raw/Walmart_Sales.csv`
+    produced the model, since that file has no version control of its own
+    (gitignored — see README). SHA256 pins the exact byte content (independent
+    of any ingest-time parsing/renaming, which is a *code* concern, not a
+    *data* one); the row/date-range stats answer the separate, and often more
+    useful, "what week is this model's data current as of" question.
+    """
+    path = Path(raw_dir) / RAW_FILENAME
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "raw_data_sha256": digest,
+        "raw_data_rows": len(df),
+        "raw_data_min_date": str(df["date"].min().date()),
+        "raw_data_max_date": str(df["date"].max().date()),
+        "raw_data_n_stores": int(df["store_nbr"].nunique()),
+    }

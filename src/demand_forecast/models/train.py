@@ -208,8 +208,17 @@ def train_and_log(
     param_grid: dict[str, list[Any]] | None = None,
     register_model: bool = True,
     test_weeks: int = settings.test_holdout_weeks,
+    data_fingerprint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run baseline + tuned LightGBM training, logging everything to MLflow.
+
+    `data_fingerprint` (see `data.ingest.compute_raw_data_fingerprint`), if
+    given, is logged as tags on the two runs that matter for tracing a served
+    model back to its data: `holdout_test_evaluation` (the quality-gate
+    decision) and `best_lightgbm_final` (the model that actually gets
+    registered). Optional and defaults to None so direct/test callers that
+    pass an in-memory DataFrame with no backing raw file keep working
+    unchanged.
 
     Three-stage split (chronological, never random — see `docs/USER_GUIDE.md`
     "Train / CV / Test" section for the full walkthrough with real dates):
@@ -346,6 +355,8 @@ def train_and_log(
     with mlflow.start_run(run_name="holdout_test_evaluation"):
         mlflow.set_tag("model_type", "lightgbm_holdout_eval")
         mlflow.set_tag("quality_gate", "pass" if gate_passed else "fail")
+        if data_fingerprint:
+            mlflow.set_tags(data_fingerprint)
         mlflow.log_params(best_params)
         mlflow.log_param("test_weeks", test_weeks)
         mlflow.log_metrics({f"test_{k}": v for k, v in test_metrics.items()})
@@ -393,6 +404,8 @@ def train_and_log(
     with mlflow.start_run(run_name="best_lightgbm_final") as run:
         mlflow.set_tag("model_type", "lightgbm_final")
         mlflow.set_tag("quality_gate", "pass")
+        if data_fingerprint:
+            mlflow.set_tags(data_fingerprint)
         mlflow.log_params(best_params)
         mlflow.log_param("test_weeks", test_weeks)
         mlflow.log_metric("cv_mean_rmsle", best_score)
@@ -422,6 +435,19 @@ def train_and_log(
                 alias=settings.mlflow_model_alias,
                 version=versions[0].version,
             )
+            # Also copy the data fingerprint onto the ModelVersion itself (not
+            # just the run) — ModelVersion tags do NOT inherit from the run's
+            # tags, and the Registry's version page is what most people look
+            # at first, so this is what makes "which data made this model"
+            # visible without a click-through to the source run.
+            if data_fingerprint:
+                for key, value in data_fingerprint.items():
+                    client.set_model_version_tag(
+                        name=settings.mlflow_model_name,
+                        version=versions[0].version,
+                        key=key,
+                        value=str(value),
+                    )
             logger.info(
                 "Registered %s v%s and aliased '%s'.",
                 settings.mlflow_model_name,
