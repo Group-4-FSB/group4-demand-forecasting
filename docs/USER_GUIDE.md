@@ -36,7 +36,7 @@ python scripts/setup_data.py
 python scripts/run_pipeline.py
 
 # 5. Inspect experiments
-mlflow ui   # http://localhost:5000 (uses the local sqlite:///mlflow.db by default)
+mlflow ui --port 5001   # http://localhost:5001 (uses local sqlite:///mlflow.db by default)
 
 # 6. Run the API locally
 uvicorn demand_forecast.api.main:app --reload --host 0.0.0.0 --port 8000
@@ -64,11 +64,14 @@ docker compose up -d mlflow
 docker compose ps   # wait for STATUS = healthy
 
 # 2. Point training at the Dockerized MLflow and register a model into it
-export MLFLOW_TRACKING_URI=http://localhost:5000
-# Windows (PowerShell): $env:MLFLOW_TRACKING_URI = "http://localhost:5000"
-# Windows (CMD): set MLFLOW_TRACKING_URI=http://localhost:5000
-python scripts/run_pipeline.py
+export MLFLOW_TRACKING_URI=http://localhost:5001
+# Windows (PowerShell): $env:MLFLOW_TRACKING_URI = "http://localhost:5001"
+# Windows (CMD): set MLFLOW_TRACKING_URI=http://localhost:5001
+docker compose run --rm trainer python scripts/run_pipeline.py
 # Trains in well under a minute on this dataset (~6.4K rows).
+
+# NOTE: 5001 is host-to-container mapping (avoids macOS AirPlay conflicts on 5000).
+# In the Docker network, services still use http://mlflow:5000 internally.
 
 # 3. Bring up the rest of the stack (api, scheduler, prometheus, grafana)
 docker compose up --build
@@ -83,7 +86,7 @@ already allocated".
 | API (Swagger UI) | http://localhost:8000/docs | Interactive OpenAPI docs |
 | API (health) | http://localhost:8000/health | Liveness/readiness |
 | API (metrics) | http://localhost:8000/metrics | Raw Prometheus exposition format |
-| MLflow | http://localhost:5000 | Experiments, runs, model registry |
+| MLflow | http://localhost:5001 | Experiments, runs, model registry |
 | `scheduler` | *(no exposed port)* | Background container; checks daily whether `production` is ≥ `RETRAIN_MAX_AGE_DAYS` old and, if so, triggers a retrain attempt — `docker logs demand-forecast-scheduler` to watch it. Logs a WARNING from `RETRAIN_WARNING_LEAD_DAYS` (default 2) days before that; same signal is scraped as `demand_forecast_production_model_age_days` and alertable in Prometheus/Grafana |
 | Prometheus | http://localhost:9090 | Query metrics, see `/alerts` for firing rules |
 | Grafana | http://localhost:3000 | Login `admin` / `admin` (change for anything beyond local grading demo); dashboard "Demand Forecast API" is pre-provisioned |
@@ -159,9 +162,9 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
 | API `/health` returns `"status": "degraded"` | No model has been trained/registered yet, or `data/processed/` is empty | Run `python scripts/run_pipeline.py`, then restart the API |
 | `libgomp.so.1: cannot open shared object file` (only if you modify the Dockerfile and drop the apt step) | LightGBM's OpenMP runtime dependency missing from the image | Keep the `libgomp1` install step in `Dockerfile` |
 | MLflow artifact download fails from the API container | MLflow server started without `--serve-artifacts` | Use the provided `Dockerfile.mlflow` command as-is, or ensure `--serve-artifacts --artifacts-destination ...` are both set |
-| `503 Model is not loaded` from `/api/v1/predict`, and the API container logs show `OSError: No such file or directory: '/E:/...'` (or any local host path) | The experiment was first created while `MLFLOW_TRACKING_URI` pointed at a **local** backend (e.g. `sqlite:///mlflow.db`) but training since then has been pointed at the **Dockerized** MLflow — the experiment's `artifact_location` was set once, at creation, to a path only the host machine can read; the API container can't reach it | Wipe and recreate: `docker compose down -v` (removes the `mlflow_data` volume), `docker compose up -d mlflow`, wait for healthy, then retrain with `MLFLOW_TRACKING_URI=http://localhost:5000` before `docker compose up --build`. Fixed going forward as of `_ensure_experiment()` in `train.py`, which now leaves `artifact_location` unset for remote (`http(s)://`) tracking URIs so the server manages its own `mlflow-artifacts:/` storage |
+| `503 Model is not loaded` from `/api/v1/predict`, and the API container logs show `OSError: No such file or directory: '/E:/...'` (or any local host path) | The experiment was first created while `MLFLOW_TRACKING_URI` pointed at a **local** backend (e.g. `sqlite:///mlflow.db`) but training since then has been pointed at the **Dockerized** MLflow — the experiment's `artifact_location` was set once, at creation, to a path only the host machine can read; the API container can't reach it | Wipe and recreate: `docker compose down -v` (removes the `mlflow_data` volume), `docker compose up -d mlflow`, wait for healthy, then retrain with `MLFLOW_TRACKING_URI=http://localhost:5001` before `docker compose up --build`. Fixed going forward as of `_ensure_experiment()` in `train.py`, which now leaves `artifact_location` unset for remote (`http(s)://`) tracking URIs so the server manages its own `mlflow-artifacts:/` storage |
 | `404 Not Found` on `/api/v1/predict` for a store number that looks valid | That `store_nbr` wasn't in the training data used to build the reference snapshot (valid range is 1-45, but only stores actually present in `data/raw/` get a snapshot entry) | Confirm the store exists in `Walmart_Sales.csv`; this is intentional — the API refuses to guess for unseen stores |
-| Port already in use (`8000`/`5000`/`9090`/`3000`) | Another process/compose stack is already bound | Stop the conflicting process, or change the left-hand port in `docker-compose.yml`'s `ports:` mapping |
+| Port already in use (`8000`/`5001`/`9090`/`3000`) | Another process/compose stack is already bound | Stop the conflicting process, or change the left-hand port in `docker-compose.yml`'s `ports:` mapping |
 | Tests are slow / hang | Full dataset accidentally used instead of `tests/fixtures/` | Tests should only ever read from `tests/fixtures/` (see `tests/conftest.py`) — check you haven't changed `raw_dir` in a fixture |
 | `run_pipeline.py` seems to pause briefly after `"Will assume non-transactional DDL"` | Normal — that's the last log line before hyperparameter search/CV; on this dataset (~6.4K rows) the whole run finishes in well under a minute, so any pause here is brief | If it's genuinely frozen for minutes (0% CPU, no progress, and `mlflow.db` stays exclusively locked with no growth), kill the process and re-run — a real hang here usually means another process already had `mlflow.db` open (e.g. two training runs launched at once, or `mlflow ui` pointed at the same file) |
 | A retrain ran (manually or via `scheduler`) but the API still serves the old predictions | The API only loads the model once, at container startup — see step 2 in §3 | `docker compose restart api` |

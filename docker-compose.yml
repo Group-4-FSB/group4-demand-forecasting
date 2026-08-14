@@ -40,6 +40,30 @@ services:
       - forecast-net
     restart: unless-stopped
 
+  # One-off training runner. Uses the same image as API but with writable
+  # mounts so run_pipeline.py can persist reference snapshots and reports.
+  trainer:
+    image: demand-forecast-api:latest
+    container_name: demand-forecast-trainer
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: demand-forecast
+      MLFLOW_MODEL_NAME: demand-forecast-lgbm
+      MLFLOW_MODEL_ALIAS: production
+      DATA_RAW_DIR: /app/data/raw
+      DATA_PROCESSED_DIR: /app/data/processed
+      LOG_LEVEL: INFO
+    volumes:
+      - ./data/raw:/app/data/raw:ro
+      - ./data/processed:/app/data/processed
+      - ./reports:/app/reports
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    networks:
+      - forecast-net
+    restart: "no"
+
   # Business rule: production must never go more than RETRAIN_MAX_AGE_DAYS
   # without an attempted refresh. Checks staleness once a day; reads whatever
   # is currently in data/raw/ (kept fresh by an external ML-engineering data

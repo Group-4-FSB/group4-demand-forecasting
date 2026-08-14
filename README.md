@@ -5,12 +5,14 @@
 > Production: From Models to Systems*.
 
 <!-- Replace <YOUR_GH_ORG>/<YOUR_GH_REPO> once pushed to GitHub -->
-![CI](https://github.com/<YOUR_GH_ORG>/<YOUR_GH_REPO>/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/khanhtq2994/group4-demand-forecasting/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Coverage](https://img.shields.io/badge/coverage-%E2%89%A596%25-brightgreen)
 
-## What this is
+## Overview
+
+### What this is
 
 Predicts next-week sales for each of 45 Walmart stores using the Kaggle
 ["Walmart Sales"](https://www.kaggle.com/datasets/mikhail1681/walmart-sales)
@@ -20,32 +22,61 @@ holiday-week flag, temperature, fuel price, CPI, and unemployment). See
 business problem, requirements, and success metrics, and
 [ARCHITECTURE.md](ARCHITECTURE.md) for the system design and trade-offs.
 
-## Train / CV / Test split
+## Quick navigation
 
-Every training run does a **chronological, three-stage split** (never
-random — see `chronological_holdout_split()` and `train_and_log()` in
-[`models/train.py`](src/demand_forecast/models/train.py)) so the reported
-accuracy is honest, not just a number from data the model already saw:
+- [Overview](#overview)
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Operations](#operations)
+- [Appendix](#appendix)
 
+## Quick Start
+
+### Quick start checklists
+
+Use this section if you just want to run the system quickly.
+
+### Local (fast iteration)
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pip install -e .
+python scripts/setup_data.py
+python scripts/run_pipeline.py
+uvicorn demand_forecast.api.main:app --reload
 ```
-Week 1 (2010-02-05) ───────────────────────► Week 135 ─► Week 143 (2012-10-26)
-│◄──────────── TRAIN + CV POOL (135 weeks) ─────────────►│◄─ TEST (8 weeks) ─►│
-│   rolling-origin CV picks the best hyperparameters      │  locked away until │
-│   (3 folds, same mechanism as before)                   │  the very last step│
+
+API docs: http://localhost:8000/docs
+
+### Docker (full stack)
+
+```bash
+docker compose up -d mlflow
+docker compose run --rm trainer python scripts/run_pipeline.py
+docker compose up --build
 ```
 
-1. **Pool** (all but the most recent `TEST_HOLDOUT_WEEKS`, default 8) feeds a
-   3-fold rolling-origin `TimeSeriesSplit` to pick the best LightGBM
-   hyperparameters — same CV mechanism the pipeline always had.
-2. Those hyperparameters are fit on the **pool only** and scored **once** on
-   the **test** weeks — data the model has never seen in any form. This is
-   the one honest, apples-to-apples number to trust.
-3. The same hyperparameters are then refit on **100% of the data** (pool +
-   test) for the model that actually gets registered/served — recent weeks
-   matter for a time series, so the deployed model shouldn't discard them
-   once the honest test score above has been recorded.
+MLflow UI: http://localhost:5001
 
-**Real numbers from the full dataset** (`python scripts/run_pipeline.py`):
+Notes:
+- Host uses port `5001` for MLflow to avoid macOS AirPlay conflicts on `5000`.
+- Containers still use `http://mlflow:5000` internally.
+
+## Architecture
+
+### Train / CV / Test split
+
+Each run uses a chronological split (never random):
+
+1. Rolling-origin CV on train+CV pool to select hyperparameters.
+2. One-time evaluation on locked holdout test weeks for honest performance.
+3. Refit on full data only after evaluation, then register/serve.
+
+Details: `chronological_holdout_split()` and `train_and_log()` in
+[`src/demand_forecast/models/train.py`](src/demand_forecast/models/train.py).
+
+Latest full-dataset results (`python scripts/run_pipeline.py`):
 
 | Metric | Value | Meaning |
 |---|---|---|
@@ -54,83 +85,37 @@ Week 1 (2010-02-05) ────────────────────
 | Baseline RMSLE (test weeks) | 0.0717 | naive baseline on the *same* 8 held-out weeks |
 | **Held-out TEST RMSLE** | **0.0428** | model that never saw those 8 weeks — beats the same-weeks baseline by ~40% |
 
-## Quality gate & scheduled retraining
+### Quality gate & scheduled retraining
 
-A held-out test score is only useful if it actually gates what gets served.
-Two mechanisms sit on top of the split above (see `get_current_production_version()`,
-the gate block in `train_and_log()` in
-[`models/train.py`](src/demand_forecast/models/train.py), and
-[`scripts/retrain_if_stale.py`](scripts/retrain_if_stale.py)):
+Two safeguards keep production reliable:
 
-**1. Promotion gate — a worse candidate never reaches `production`.** Every
-run compares its own held-out TEST RMSLE against the TEST RMSLE the
-*current* `production`-aliased model was registered with:
+1. Promotion gate: candidate model is promoted only when holdout TEST RMSLE is
+   better than or equal to current production; otherwise it is rejected and
+   `production` alias stays unchanged.
+2. Staleness retrain: scheduler checks model age daily and triggers retrain
+   attempts at `RETRAIN_MAX_AGE_DAYS` (default 7), with warning lead time via
+   `RETRAIN_WARNING_LEAD_DAYS` (default 2).
 
-- **Better or equal → promoted.** Refit on 100% of data, registered, alias
-  moved. (The very first run for a model name has nothing to compare
-  against, so it always promotes.)
-- **Worse → rejected.** Nothing is registered, the `production` alias is
-  left untouched, and the attempt is tagged `quality_gate=fail` (vs. `pass`)
-  on its `holdout_test_evaluation` MLflow run — searchable/filterable
-  straight from the MLflow UI — plus a bordered warning in the pipeline log
-  so a worse model can't quietly slip by unnoticed:
-  ```
-  ======================================================================
-  QUALITY GATE FAILED — candidate NOT promoted to production
-    candidate test_rmsle=0.0512  vs  current production test_rmsle=0.0428
-    production alias left pointing at the existing model.
-  ======================================================================
-  ```
-  `run_pipeline.py` reflects this in its exit summary too:
-  `REJECTED by quality gate — production unchanged`.
+Monitor and alerting:
 
-Verified in [`tests/model/test_quality_gate.py`](tests/model/test_quality_gate.py)
-(first-registration-always-promotes, worse-candidate-rejected-alias-unchanged,
-tying-candidate-still-promotes, gate-disabled-when-`register_model=False`).
+- Metric: `demand_forecast_production_model_age_days`
+- Alerts: `ProductionModelApproachingStaleness`, `ProductionModelStale`, `ModelNotLoaded`
 
-**2. A production model can't silently go stale.** `scripts/retrain_if_stale.py`
-checks the age of the current `production` model (from its MLflow registration
-timestamp) and forces a retrain attempt once it's at least `RETRAIN_MAX_AGE_DAYS`
-(default **7**) days old, against whatever is currently in `data/raw/` — keeping
-that folder fresh is an external data pipeline's job (out of scope here). Being
-"due" only guarantees an *attempt*; the gate above still decides whether it's
-actually promoted. Runs as its own `scheduler` container in
-`docker-compose.yml` (reuses the `api` image, checks once a day):
+Implementation references:
 
-```bash
-# standalone / cron use
-python scripts/retrain_if_stale.py --max-age-days 7
-# or run continuously (what the Docker service does):
-python scripts/retrain_if_stale.py --loop --check-interval-hours 24
-```
+- [`src/demand_forecast/models/train.py`](src/demand_forecast/models/train.py)
+- [`scripts/retrain_if_stale.py`](scripts/retrain_if_stale.py)
+- [`monitoring/prometheus/alert_rules.yml`](monitoring/prometheus/alert_rules.yml)
+- [`tests/model/test_quality_gate.py`](tests/model/test_quality_gate.py)
 
-Real log line from a fresh registration:
-`Production model is 0.0 day(s) old (limit 7) — next check-in due in ~7.0 day(s). Nothing to do.`
+## Operations
 
-**Heads-up before it happens, not just at the moment it does.** Starting
-`RETRAIN_WARNING_LEAD_DAYS` (default **2**) days before the limit — i.e. from
-day 5 for the 7-day default — every check logs a **WARNING** instead of the
-usual INFO line:
-
-```
-Production model is 6.0 day(s) old (limit 7) — approaching staleness: only
-~1.0 day(s) left before an automatic retrain is triggered.
-```
-
-The same signal doubles as a Prometheus gauge,
-`demand_forecast_production_model_age_days` (scraped from the API, updated
-live at scrape time — see `api/metrics.py`), with two matching alert rules in
-[`monitoring/prometheus/alert_rules.yml`](monitoring/prometheus/alert_rules.yml):
-`ProductionModelApproachingStaleness` (warning, day 5–7) and
-`ProductionModelStale` (critical, still stale a full day past the limit —
-the scheduler container is down, or every retrain keeps failing the gate). A
-third new rule, `ModelNotLoaded`, pages if `/api/v1/predict` is serving 503s
-because nothing is registered yet.
-
-## Local Development (no Docker)
+### Local Development (no Docker)
 
 Fastest loop for iterating on the ML pipeline — everything runs directly on
 your machine against a local `sqlite:///mlflow.db`.
+
+If you only need the minimal happy-path commands, use [Quick start checklists](#quick-start-checklists) above.
 
 ```bash
 # 1. Python venv + deps (Python >=3.10)
@@ -154,11 +139,11 @@ uvicorn demand_forecast.api.main:app --reload
 # -> http://localhost:8000/docs
 
 # Optional: inspect experiments
-mlflow ui
-# -> http://localhost:5000
+mlflow ui --port 5001
+# -> http://localhost:5001
 ```
 
-## Docker (full stack — production-like)
+### Docker (full stack — production-like)
 
 Runs the API behind the same containers used for grading/demo: FastAPI +
 MLflow (its own tracking server, not the local `mlflow.db` above) + a
@@ -166,22 +151,41 @@ MLflow (its own tracking server, not the local `mlflow.db` above) + a
 [Quality gate & scheduled retraining](#quality-gate--scheduled-retraining))
 + Prometheus + Grafana. Requires **Docker Desktop running**.
 
-```powershell
+```bash
 # 1. Start MLflow first and wait for it to report healthy before continuing
 docker compose up -d mlflow
 docker compose ps   # wait for STATUS = healthy
 
-# 2. Point training at the Dockerized MLflow and register a model into IT
-#    (it has its own tracking store, separate from the local one above —
-#    the API container can only load a model that's registered here)
-$env:MLFLOW_TRACKING_URI = "http://localhost:5000"        # PowerShell
-# bash: export MLFLOW_TRACKING_URI=http://localhost:5000
-# cmd: set MLFLOW_TRACKING_URI=http://localhost:5000
-python scripts/run_pipeline.py
+# 2. Register a model into Dockerized MLflow
+docker compose run --rm trainer python scripts/run_pipeline.py
 
 # 3. Bring up the rest of the stack
 docker compose up --build
 ```
+
+If you want to run training from your host Python instead of the Docker `trainer` service,
+set `MLFLOW_TRACKING_URI` to the Dockerized MLflow host port (`5001`):
+
+```bash
+# bash
+export MLFLOW_TRACKING_URI=http://localhost:5001
+python scripts/run_pipeline.py
+```
+
+```powershell
+# PowerShell
+$env:MLFLOW_TRACKING_URI = "http://localhost:5001"
+python scripts/run_pipeline.py
+```
+
+```bat
+:: Windows CMD
+set MLFLOW_TRACKING_URI=http://localhost:5001
+python scripts/run_pipeline.py
+```
+
+# NOTE: 5001 is the host port (helps avoid macOS AirPlay conflicts on 5000).
+# Containers still talk to MLflow internally via http://mlflow:5000.
 
 > If port 8000 is already bound by a local `uvicorn` from the section above,
 > stop it first (`Ctrl+C`) — otherwise the `api` container fails to start
@@ -193,7 +197,7 @@ then see [Example request](#example-request) below — same API either way.
 | Service | URL |
 |---|---|
 | API (Swagger) | http://localhost:8000/docs |
-| MLflow | http://localhost:5000 |
+| MLflow | http://localhost:5001 |
 | `scheduler` | *(no UI)* — `docker logs demand-forecast-scheduler` |
 | Prometheus | http://localhost:9090 (see `/alerts`) |
 | Grafana | http://localhost:3000 (`admin` / `admin`) |
@@ -206,7 +210,7 @@ docker compose down -v    # stop and wipe volumes too
 Full instructions, all service URLs, and troubleshooting:
 [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
 
-## Example request
+### Example request
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/predict \
@@ -245,7 +249,7 @@ curl -X POST http://localhost:8000/api/v1/predict/batch \
 # Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/v1/predict/batch -ContentType "application/json" -Body '{"items": [{"store_nbr": 1, "date": "2012-11-02"}, {"store_nbr": 2, "date": "2012-11-09", "temperature": 55.2}]}'
 ```
 
-## Try the quality gate & staleness alert yourself
+### Try the quality gate & staleness alert yourself
 
 Both are timing-based by design (7-day retrain, 8-week test holdout), so
 here's how to see them fire in seconds instead of days:
@@ -292,7 +296,7 @@ here's how to see them fire in seconds instead of days:
 > directly rather than any public API — treat it as a one-off dev/demo tool
 > if you build it, not something to wire into the app.
 
-## What's implemented
+### What's implemented
 
 | Area | Highlights |
 |---|---|
@@ -303,7 +307,9 @@ here's how to see them fire in seconds instead of days:
 | **Responsible AI** | Store-segment fairness/disparity analysis (flagged a real ~1.9x per-store disparity — see docs), SHAP + native gain-importance explainability, privacy & ethics discussion — [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) |
 | **Docs** | This README, [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [docs/PROBLEM_DEFINITION.md](docs/PROBLEM_DEFINITION.md), [docs/USER_GUIDE.md](docs/USER_GUIDE.md), OpenAPI/Swagger at `/docs` |
 
-## Project structure
+## Appendix
+
+### Project structure
 
 ```
 demand-forecast/
@@ -317,7 +323,7 @@ demand-forecast/
 └── .github/workflows/ci.yml
 ```
 
-## Testing
+### Testing
 
 ```bash
 pytest --cov=src --cov-report=term-missing   # unit + integration + data + model tests
@@ -325,11 +331,11 @@ ruff check src tests scripts                  # lint
 black --check src tests scripts               # format check
 ```
 
-## Team
+### Team
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for roles, git workflow, and the
 individual-contribution tracking approach.
 
-## License
+### License
 
 [MIT](LICENSE)
