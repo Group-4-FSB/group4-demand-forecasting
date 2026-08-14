@@ -29,7 +29,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from demand_forecast.config import settings  # noqa: E402
 from demand_forecast.data.features import build_features  # noqa: E402
-from demand_forecast.data.ingest import load_walmart_sales  # noqa: E402
+from demand_forecast.data.ingest import (  # noqa: E402
+    compute_raw_data_fingerprint,
+    load_walmart_sales,
+)
 from demand_forecast.data.snapshot import save_reference_artifacts  # noqa: E402
 from demand_forecast.data.validate import validate_sales_table  # noqa: E402
 from demand_forecast.models.train import train_and_log  # noqa: E402
@@ -54,6 +57,14 @@ def run_training_pipeline(
     """
     logger.info("1/5 Loading raw data from %s", settings.data_raw_dir)
     df = load_walmart_sales(settings.data_raw_dir)
+    data_fingerprint = compute_raw_data_fingerprint(settings.data_raw_dir, df)
+    logger.info(
+        "Raw data fingerprint: sha256=%s..., %d rows, %s to %s",
+        data_fingerprint["raw_data_sha256"][:12],
+        data_fingerprint["raw_data_rows"],
+        data_fingerprint["raw_data_min_date"],
+        data_fingerprint["raw_data_max_date"],
+    )
 
     logger.info("2/5 Validating training data")
     report = validate_sales_table(df)
@@ -71,6 +82,7 @@ def run_training_pipeline(
         n_param_samples=n_param_samples,
         register_model=register_model,
         test_weeks=test_weeks,
+        data_fingerprint=data_fingerprint,
     )
 
     if summary["promoted"]:
@@ -108,12 +120,19 @@ def main() -> int:
 
     logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(message)s")
 
-    summary = run_training_pipeline(
-        n_param_samples=args.n_param_samples,
-        n_cv_splits=args.n_cv_splits,
-        test_weeks=args.test_weeks,
-        register_model=not args.no_register,
-    )
+    try:
+        summary = run_training_pipeline(
+            n_param_samples=args.n_param_samples,
+            n_cv_splits=args.n_cv_splits,
+            test_weeks=args.test_weeks,
+            register_model=not args.no_register,
+        )
+    except Exception:
+        logger.exception(
+            "Training pipeline failed — production model (if any) is unchanged; "
+            "see the traceback above for the root cause."
+        )
+        return 1
 
     print("=" * 60)
     print(f"Baseline RMSLE (all data)   : {summary['baseline_metrics']['rmsle']:.4f}")

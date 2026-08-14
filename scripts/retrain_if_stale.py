@@ -172,7 +172,11 @@ def main() -> int:
     logging.basicConfig(level=settings.log_level, format="%(asctime)s %(levelname)s %(message)s")
 
     if not args.loop:
-        check_and_retrain(args.max_age_days, args.warning_lead_days)
+        try:
+            check_and_retrain(args.max_age_days, args.warning_lead_days)
+        except Exception:
+            logger.exception("Staleness check failed — production model (if any) is unchanged.")
+            return 1
         return 0
 
     logger.info(

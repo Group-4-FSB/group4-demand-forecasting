@@ -150,6 +150,15 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
    pipeline. A scheduler-triggered retrain still goes through the same gate
    above, so staleness alone can never push a worse model into production.
    One-off / cron use outside Docker: `python scripts/retrain_if_stale.py`.
+5. **Tracing a served model back to its data.** `data/raw/Walmart_Sales.csv`
+   isn't version-controlled, so open the `best_lightgbm_final` (or
+   `holdout_test_evaluation`) run for the `production` version in the MLflow
+   UI and check its tags: `raw_data_sha256` pins the exact file content used,
+   `raw_data_min_date`/`raw_data_max_date` show what week the data was
+   current as of (different from the run's own start time, which only says
+   *when* training happened), and `raw_data_rows`/`raw_data_n_stores` are a
+   quick sanity check. See [README.md § Data
+   lineage](../README.md#data-lineage).
 
 ## 4. Troubleshooting
 
@@ -159,6 +168,7 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
 | `make: command not found` (Windows) | Windows doesn't include `make` by default | Run the `python`/`pip` commands directly as shown in §1, or run `make` inside Git Bash / WSL / Chocolatey |
 | `ModuleNotFoundError: No module named 'demand_forecast'` | The package under `src/` was never installed into the venv (`pip install -r requirements-dev.txt` alone does **not** do this) | Run `pip install -e .` once per venv (already included in `make setup` and §1 above) |
 | `FileNotFoundError: Missing raw file ...` | Dataset not extracted yet | `python scripts/setup_data.py` |
+| `python scripts/run_pipeline.py` (or `retrain_if_stale.py` without `--loop`) exits non-zero with an `ERROR ... Training pipeline failed` / `Staleness check failed` log line | Any step of the pipeline raised (bad data, MLflow unreachable, etc.) — this is caught, logged with the full traceback, and surfaced as a clean exit code 1 instead of an uncaught crash | Read the traceback right after the `ERROR` line for the root cause; `production` is left unchanged either way, so there's nothing to roll back |
 | API `/health` returns `"status": "degraded"` | No model has been trained/registered yet, or `data/processed/` is empty | Run `python scripts/run_pipeline.py`, then restart the API |
 | `libgomp.so.1: cannot open shared object file` (only if you modify the Dockerfile and drop the apt step) | LightGBM's OpenMP runtime dependency missing from the image | Keep the `libgomp1` install step in `Dockerfile` |
 | MLflow artifact download fails from the API container | MLflow server started without `--serve-artifacts` | Use the provided `Dockerfile.mlflow` command as-is, or ensure `--serve-artifacts --artifacts-destination ...` are both set |
