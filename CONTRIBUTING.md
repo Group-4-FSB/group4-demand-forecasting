@@ -24,6 +24,9 @@ their area in the individual Q&A portion of grading.
   `fix/<short-description>` (e.g. `feature/fairness-report`).
 - Open a pull request into `main`; at least one other team member reviews
   before merging. CI (lint + tests + Docker build) must pass.
+- After merge to `main`, CD runs on the project's local self-hosted GitHub
+  runner (see `docs/CI_CD_LOCAL.md`) and deploys with Docker Compose on the
+  local machine.
 - Prefer small, frequent, meaningful commits over one large commit at the
   end — commit frequency/quality/distribution is part of the individual
   contribution grading criteria.
