@@ -28,6 +28,7 @@ business problem, requirements, and success metrics, and
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Operations](#operations)
+- [CI/CD Guide](docs/CI_CD.md)
 - [Appendix](#appendix)
 
 ## Quick Start
