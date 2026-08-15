@@ -8,7 +8,7 @@ fairness, explainability, data privacy, and ethics. Supporting code lives in
 ## Summary
 
 This section is a quick summary. Detailed evidence and
-implementation notes follow in Sections 1-5.
+implementation notes follow in Sections 1-6.
 
 ### Fairness
 
@@ -16,19 +16,25 @@ implementation notes follow in Sections 1-5.
   dataset has no demographic/protected-attribute fields.
 - Segments: `store_size_bucket`, `unemployment_bucket`, `store_nbr`.
 - Signal: disparity ratio = worst RMSLE / best RMSLE, flag when > 1.5.
-- Latest result: `store_size_bucket` 1.11 (OK), `unemployment_bucket` 1.22
-  (OK), `store_nbr` 1.93 (FLAGGED).
+- Evaluation protocol: predictions from the final 8-week chronological
+  holdout, produced by a model trained only on earlier weeks. Segment
+  boundaries are derived from that earlier training pool as well.
+- Latest result: `store_size_bucket` 1.109 (OK), `unemployment_bucket` 1.119
+  (OK), `store_nbr` 6.440 (FLAGGED; only 8 observations per store, so treat
+  the magnitude as a review signal rather than a stable population estimate).
 - Mitigation: store-specific features, weighting for under-served stores,
   then retrain and compare disparity before/after in MLflow.
 
 ### Explainability
 
-- Methods: SHAP TreeExplainer (global + local) and LightGBM native gain as an
-  independent cross-check.
-- Latest evidence: both methods agree on top features
-  (`store_nbr`, `sales_lag_1`, `sales_roll_mean_4`).
-- Interpretation: agreement between two methods improves trust in explanation
-  stability.
+- Methods: SHAP TreeExplainer (global + local), LightGBM native gain, and
+  model-agnostic permutation importance on the chronological holdout.
+- Latest evidence: all three methods agree that `store_nbr` and
+  `sales_lag_1` are the two most important features. SHAP/native gain rank
+  `sales_roll_mean_4` third; permutation importance ranks `sales_lag_52`
+  third and `sales_roll_mean_4` fourth.
+- Interpretation: agreement on the dominant signals improves confidence;
+  disagreement lower in the ranking is retained rather than hidden.
 
 ### Privacy
 
@@ -50,7 +56,7 @@ implementation notes follow in Sections 1-5.
 - Fairness flagged (>1.5): mitigation ticket + retrain comparison.
 - Staleness alerts: verify scheduler/data freshness, trigger retrain.
 - Model unavailable: restore serving path and validate production alias.
-- Cadence: review fairness/explainability every production retrain and run a
+- Cadence: review fairness/explainability every production promotion and run a
   monthly retrospective on recurring under-served stores.
 
 ## 1. Fairness analysis & bias detection
@@ -79,33 +85,35 @@ sales, understaffing) or more overstock (wasted cost) concentrated on that
 store's staff and local shoppers.
 
 **Method** (`fairness/fairness_report.py`):
-1. Score the full dataset, derive the three segment columns above.
-2. Group by each segment column and compute RMSLE / MAE / RMSE per group
+1. Hold out the most recent 8 weeks. Fit the evaluation model only on all
+   earlier weeks, then predict the untouched holdout.
+2. Define the store-size and unemployment bucket boundaries using only the
+   earlier training pool, then apply those fixed boundaries to the holdout.
+3. Group by each segment column and compute RMSLE / MAE / RMSE per group
    (`segment_performance`).
-3. Compute a **disparity ratio** = worst-segment RMSLE / best-segment RMSLE
+4. Compute a **disparity ratio** = worst-segment RMSLE / best-segment RMSLE
    (`disparity_ratio`). A ratio close to 1.0 means uniform quality; we flag
    any segment column whose ratio exceeds **1.5x** (`fairness_report`,
    `disparity_flag_threshold`) for follow-up.
 
-**Actual finding on the full dataset** (see `reports/fairness_report.md`
-after running `python scripts/run_pipeline.py`):
+**Actual finding on the chronological holdout** (2012-09-07 to 2012-10-26,
+360 rows; see `reports/fairness_report.md` after running
+`python scripts/run_pipeline.py`):
 
 | Segment | Disparity ratio | Flagged? |
 |---|---|---|
-| `store_size_bucket` | 1.11 | No |
-| `unemployment_bucket` | 1.22 | No |
-| `store_nbr` (per-store) | **1.93** | **⚠️ Yes** |
+| `store_size_bucket` | 1.109 | No |
+| `unemployment_bucket` | 1.119 | No |
+| `store_nbr` (per-store) | **6.440** | **⚠️ Yes** |
 
-The coarse buckets look fine, but the per-store breakdown is not: individual
-stores (e.g. store 18, consistently the worst-served across retraining runs)
-have roughly **1.9-2.2x** the RMSLE of the best-served store, even though
-they fall in the same size/unemployment bucket as better-served stores. This
-means the coarse segments hide real, store-level disparity — exactly the
-kind of finding this analysis exists to surface, and a genuine limitation of
-a single global model at this dataset's scale (~143 weeks/store). (Exact
-ratios shift slightly between retraining runs — re-check
-`reports/fairness_report.md` after each run; store 18 has shown up as the
-worst-served store across multiple runs so far.)
+The coarse buckets look similar, but the per-store breakdown is not: store 17
+has holdout RMSLE 0.0927 versus 0.0144 for store 32. This means aggregation
+can hide an individual-store failure and is a genuine limitation of one
+global model. The magnitude must be interpreted cautiously: each store has
+only 8 observations in this holdout, so a holiday or isolated shock can move
+the ratio substantially. The correct response is investigation and repeated
+measurement across later windows, not a claim that 6.440x is a permanent
+property of either store.
 
 **Mitigation strategies:**
 - Add store-specific features (e.g. a store-level historical volatility
@@ -120,7 +128,7 @@ worst-served store across multiple runs so far.)
 
 ## 2. Model explainability
 
-Two independent, complementary methods are implemented
+Three complementary methods are implemented
 (`explainability/shap_explain.py`):
 
 1. **SHAP (TreeExplainer)** — game-theoretic feature attribution.
@@ -137,27 +145,39 @@ Two independent, complementary methods are implemented
    `sales_lag_1` and `sales_roll_mean_4` (recent momentum). Two independent
    methods landing on the same ranking increases confidence the explanation
    isn't an artifact of one method.
+3. **Permutation importance** (`permutation_feature_importance()`) — a
+   model-agnostic cross-check that shuffles one feature at a time and measures
+   degradation in log-target RMSE on the untouched chronological holdout.
 
-Both are cheap enough to run as part of the standard training pipeline and
+All three are cheap enough to run as part of the standard training pipeline and
 are logged as MLflow artifacts on the final run.
 
 **Evidence from the latest run artifacts** (`reports/shap_top_features.csv`,
-`reports/native_gain_importance.csv`):
+`reports/native_gain_importance.csv`, and
+`reports/permutation_importance_holdout.csv`):
 
-| Rank | SHAP (mean |value|) | Native gain importance |
+| Rank | SHAP (mean absolute value) | Native gain importance |
 |---|---|---|
 | 1 | `store_nbr` (0.2895) | `store_nbr` (7680.69) |
 | 2 | `sales_lag_1` (0.1318) | `sales_lag_1` (2315.48) |
 | 3 | `sales_roll_mean_4` (0.0498) | `sales_roll_mean_4` (1195.06) |
 
-The top-3 agreement between SHAP and native gain is consistent with the
-expected demand dynamics and is treated as a robustness check.
+Permutation importance independently ranks `store_nbr` (0.3025) and
+`sales_lag_1` (0.1541) first and second, followed by `sales_lag_52` (0.0788)
+and `sales_roll_mean_4` (0.0635). Agreement on the top two is consistent with
+store baselines and recent momentum; the third/fourth-place disagreement
+shows why multiple explanation methods are reported.
 
-**SHAP + LIME wording** This implementation uses SHAP + a
-model-native cross-check (LightGBM gain) instead of SHAP + LIME because the
-model is tree-based and TreeExplainer is exact/fast for this setting.
-If strict SHAP+LIME evidence is required by the grader, add a compact LIME
-local explanation appendix as a future enhancement.
+The local waterfall intentionally explains the latest holdout prediction for
+the worst-RMSLE store, rather than a convenient random row. Because the model
+is trained on `log1p(sales)`, SHAP values in the waterfall are additive in
+log-sales space; `reports/shap_local_example.json` records both the log-space
+output and its dollar-scale inverse transform to prevent misinterpretation.
+
+**Why not LIME.** The rubric allows SHAP, LIME, *or equivalent*. For this
+tree model, TreeExplainer is efficient and stable, while held-out permutation
+importance supplies the model-agnostic check LIME would otherwise provide.
+Native gain is retained as a third, model-specific diagnostic.
 
 ## 3. Data privacy considerations
 
@@ -200,8 +220,8 @@ local explanation appendix as a future enhancement.
   raw predictions with no artificial confidence theater; planners should
   treat large predicted swings as a prompt to double-check, not blind ground
   truth.
-- **Fairness-related labor impact.** The model systematically under-serves
-  certain individual stores (disparity ratio ~1.9x, §1) — that store's staff
+- **Fairness-related labor impact.** The current holdout flags substantial
+  individual-store disparity (ratio 6.440x, §1) — the affected store's staff
   bear more manual correction workload than staff at better-served stores,
   an equity concern addressed by the fairness monitoring above, not just an
   accuracy one.
@@ -224,7 +244,28 @@ minimum response playbook:
 | Model unavailable | `ModelNotLoaded` alert or `/health` degraded | API owner | Restore serving path (reload model / restart API / verify registry alias) | 4 hours |
 
 Review cadence:
-- Fairness and explainability artifacts are reviewed on every production
-  retrain attempt.
+- Fairness and explainability artifacts are reviewed on every successful
+  production promotion. Rejected candidates do not replace the production
+  report.
 - A monthly retrospective checks whether recurring under-served stores remain
   the same and whether mitigation reduced disparity.
+
+## 6. Reproducing the evidence
+
+```bash
+python scripts/setup_data.py
+python scripts/run_pipeline.py
+```
+
+A promoted run creates and logs the following MLflow artifacts under
+`responsible_ai/`:
+
+- `fairness_report.md`, `fairness_metrics.csv`, `fairness_summary.json`
+- `shap_summary.png`, `shap_waterfall_example.png`
+- `shap_top_features.csv`, `shap_local_example.json`
+- `native_gain_importance.csv`, `permutation_importance_holdout.csv`
+
+The local `reports/` directory is gitignored because these outputs belong to
+a particular model/data run. The corresponding MLflow run is the auditable
+source that binds them to model parameters, metrics, code, and data
+fingerprint.

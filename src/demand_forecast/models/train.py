@@ -318,6 +318,8 @@ def train_and_log(
     eval_model = _fit_lgbm(pool_df, feature_cols, best_params)
     test_preds = np.expm1(eval_model.predict(test_df[feature_cols]))
     test_metrics = evaluate_all(test_df[TARGET], test_preds)
+    responsible_ai_eval_df = test_df.copy()
+    responsible_ai_eval_df["prediction"] = test_preds
 
     # Quality gate: compare against whatever is currently aliased `production`
     # (if register_model is False there is nothing to promote, so the gate is
@@ -393,6 +395,9 @@ def train_and_log(
             "model_uri": None,
             "model": eval_model,
             "feature_columns": feature_cols,
+            "responsible_ai_eval_df": responsible_ai_eval_df,
+            "responsible_ai_reference_df": pool_df,
+            "responsible_ai_eval_model": eval_model,
         }
 
     # 3b. Gate passed: refit on the FULL dataset (pool + test) with the same
@@ -469,6 +474,12 @@ def train_and_log(
         "model_uri": model_info.model_uri,
         "model": final_model,
         "feature_columns": feature_cols,
+        # Fairness must be measured using predictions from eval_model, which
+        # never saw these weeks. The registered final_model is refit on all
+        # data only after this honest evaluation has been recorded.
+        "responsible_ai_eval_df": responsible_ai_eval_df,
+        "responsible_ai_reference_df": pool_df,
+        "responsible_ai_eval_model": eval_model,
     }
 
 

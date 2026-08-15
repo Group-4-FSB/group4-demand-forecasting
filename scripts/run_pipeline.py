@@ -95,6 +95,9 @@ def run_training_pipeline(
             df=features_df,
             feature_cols=summary["feature_columns"],
             output_dir=REPORTS_DIR,
+            fairness_evaluation_df=summary["responsible_ai_eval_df"],
+            fairness_reference_df=summary["responsible_ai_reference_df"],
+            fairness_evaluation_model=summary["responsible_ai_eval_model"],
             mlflow_run_id=summary["run_id"],
         )
         logger.info("Saved Responsible AI report to %s", REPORTS_DIR)

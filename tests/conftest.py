@@ -10,6 +10,7 @@ directory instead of whatever the developer has configured for local dev.
 from __future__ import annotations
 
 import os
+import uuid
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -18,11 +19,12 @@ ARTIFACTS_DIR = TESTS_DIR / ".test_artifacts"
 ARTIFACTS_DIR.mkdir(exist_ok=True)
 
 _mlflow_db_path = (ARTIFACTS_DIR / "mlflow.db").as_posix()
+_test_run_id = uuid.uuid4().hex[:12]
 os.environ.setdefault("MLFLOW_TRACKING_URI", f"sqlite:///{_mlflow_db_path}")
 os.environ.setdefault("MLFLOW_ARTIFACT_ROOT", (ARTIFACTS_DIR / "mlartifacts").as_posix())
 os.environ.setdefault("DATA_PROCESSED_DIR", str(ARTIFACTS_DIR / "processed"))
-os.environ.setdefault("MLFLOW_EXPERIMENT_NAME", "demand-forecast-test")
-os.environ.setdefault("MLFLOW_MODEL_NAME", "demand-forecast-lgbm-test")
+os.environ.setdefault("MLFLOW_EXPERIMENT_NAME", f"demand-forecast-test-{_test_run_id}")
+os.environ.setdefault("MLFLOW_MODEL_NAME", f"demand-forecast-lgbm-test-{_test_run_id}")
 
 import pytest  # noqa: E402
 from demand_forecast.data.features import build_features  # noqa: E402

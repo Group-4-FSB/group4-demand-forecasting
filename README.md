@@ -8,7 +8,7 @@
 ![CI](https://github.com/khanhtq2994/group4-demand-forecasting/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Coverage](https://img.shields.io/badge/coverage-%E2%89%A596%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)
 
 ## Overview
 
@@ -370,7 +370,7 @@ flowchart LR
 | **Model freshness** | `demand_forecast_production_model_age_days` | Custom governance | Age of current `production` alias model in days | `ProductionModelApproachingStaleness`: 5-7 days; `ProductionModelStale`: >=7 days for 24h | Check scheduler health, retrain outcome, and quality gate rejects |
 | **Primary model quality** | RMSLE | Offline ML | $RMSLE = \sqrt{\frac{1}{n}\sum_i (\log(1+\hat{y}_i)-\log(1+y_i))^2}$ | Compared against baseline and production RMSLE | Promote only if candidate <= current production |
 | **Secondary model quality** | MAE, RMSE | Offline ML | $MAE = \frac{1}{n}\sum_i |\hat{y}_i-y_i|$, $RMSE = \sqrt{\frac{1}{n}\sum_i (\hat{y}_i-y_i)^2}$ | Tracked per run and segment | Diagnose magnitude vs. relative error behavior |
-| **Fairness parity** | Disparity ratio by segment | Custom Responsible AI | $\frac{\max(RMSLE_{segment})}{\min(RMSLE_{segment})}$ across `store_size_bucket`, `unemployment_bucket`, `store_nbr` | Flag when > 1.5 | Open mitigation task (features/weighting), retrain, compare before/after |
+| **Subgroup error disparity** | Disparity ratio by proxy segment | Custom Responsible AI | $\frac{\max(RMSLE_{segment})}{\min(RMSLE_{segment})}$ across `store_size_bucket`, `unemployment_bucket`, `store_nbr`, evaluated on the chronological holdout | Flag when > 1.5 | Open mitigation task (features/weighting), retrain, compare before/after |
 
 Where these are implemented:
 
@@ -387,8 +387,8 @@ Where these are implemented:
 | **ML pipeline** | Validated ingestion (`data/ingest.py`, `data/validate.py`), causal feature engineering incl. rule-based holiday-week detection (`data/features.py`), naive baseline + LightGBM with time-series CV + hyperparameter search + a **true chronological held-out test set** (never trained on — see [Train / CV / Test split](#train--cv--test-split)), a **promotion quality gate** and a **7-day auto-retrain scheduler** (see [Quality gate & scheduled retraining](#quality-gate--scheduled-retraining)), full MLflow tracking & model registry (`models/train.py`) |
 | **Deployment** | FastAPI (`/api/v1/predict`, `/api/v1/predict/batch`, `/health`, auto Swagger at `/docs`), multi-stage non-root Dockerfile, 5-service `docker-compose.yml` (API, MLflow, retrain `scheduler`, Prometheus, Grafana) |
 | **Monitoring** | Auto HTTP metrics + custom ML metrics (prediction count/latency/value distribution, model loaded/version, **production model age**) via `prometheus-fastapi-instrumentator`; provisioned Grafana dashboard; 8 Prometheus alert rules incl. model-not-loaded and a day-5 "approaching staleness" warning ahead of the 7-day auto-retrain |
-| **Testing & CI/CD** | 117 tests across unit / integration / data-quality / model-validation (`tests/`, incl. the quality gate and retrain scheduler), 96% coverage, GitHub Actions pipeline (lint → test → Docker build) |
-| **Responsible AI** | Store-segment fairness/disparity analysis (flagged a real ~1.9x per-store disparity — see docs), SHAP + native gain-importance explainability, privacy & ethics discussion — [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) |
+| **Testing & CI/CD** | 119 tests across unit / integration / data-quality / model-validation (`tests/`, incl. Responsible AI, the quality gate, and retrain scheduler), 95% coverage, GitHub Actions pipeline (lint → test → Docker build) |
+| **Responsible AI** | Chronological-holdout subgroup analysis (size 1.109x, unemployment 1.119x, per-store **6.440x flagged**), SHAP global/local + native gain + held-out permutation importance, privacy & ethics discussion — [docs/RESPONSIBLE_AI.md](docs/RESPONSIBLE_AI.md) |
 | **Docs** | This README, [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [docs/PROBLEM_DEFINITION.md](docs/PROBLEM_DEFINITION.md), [docs/USER_GUIDE.md](docs/USER_GUIDE.md), OpenAPI/Swagger at `/docs` |
 
 ## Appendix

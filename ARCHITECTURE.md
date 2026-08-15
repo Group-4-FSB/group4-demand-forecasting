@@ -22,7 +22,7 @@ flowchart LR
         TRAIN --> GATE{"Quality Gate\ncandidate test_rmsle\nvs current production"}
         GATE -- "worse: reject" --> REJECT["alias untouched\ntag quality_gate=fail"]
         GATE -- "better/equal/first: promote" --> FEAT2["Reference Snapshot\ndata/processed"]
-        GATE -- "better/equal/first: promote" --> REPORT["Responsible AI Report\nSHAP + Fairness\nreporting.py"]
+        GATE -- "better/equal/first: promote" --> REPORT["Responsible AI Report\nSHAP + Permutation + Fairness\nreporting.py"]
     end
 
     subgraph Scheduler["Scheduler (always-on, checks daily)"]
@@ -58,7 +58,7 @@ flowchart LR
 | **Feature engineering** | Calendar features, lag/rolling sales features, rule-based holiday-week detection — applied identically at train and serve time | [`src/demand_forecast/data/features.py`](src/demand_forecast/data/features.py) |
 | **Training** | Baseline model, LightGBM + time-series CV + hyperparameter search, a chronological held-out test evaluation, a promotion **quality gate** (rejects a candidate worse than current `production`), MLflow logging & registry promotion, raw-data fingerprint tagging for lineage (see §5) | [`src/demand_forecast/models/train.py`](src/demand_forecast/models/train.py) |
 | **Retrain scheduler** | Checks the age of the `production` model once a day; forces a retrain attempt (still subject to the quality gate) once it's ≥ `RETRAIN_MAX_AGE_DAYS` (default 7) days old | [`scripts/retrain_if_stale.py`](scripts/retrain_if_stale.py) |
-| **Responsible AI reporting** | SHAP + native feature importance, per-segment fairness disparity report | [`src/demand_forecast/explainability/`](src/demand_forecast/explainability/), [`src/demand_forecast/fairness/`](src/demand_forecast/fairness/), [`reporting.py`](src/demand_forecast/reporting.py) |
+| **Responsible AI reporting** | Fairness on an untouched chronological holdout with training-derived segment boundaries; SHAP global/local, native gain, and held-out permutation importance | [`src/demand_forecast/explainability/`](src/demand_forecast/explainability/), [`src/demand_forecast/fairness/`](src/demand_forecast/fairness/), [`reporting.py`](src/demand_forecast/reporting.py) |
 | **Serving** | Loads the registered model + reference snapshot, exposes REST endpoints, emits ML-specific metrics | [`src/demand_forecast/api/`](src/demand_forecast/api/) |
 | **Experiment tracking / registry** | Single source of truth for runs, metrics, and the currently-serving model version (via alias `production`) | MLflow service (`Dockerfile.mlflow`) |
 | **Monitoring** | Scrapes API metrics, evaluates alert rules, renders dashboards | `monitoring/prometheus/`, `monitoring/grafana/` |
