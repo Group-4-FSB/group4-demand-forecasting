@@ -8,7 +8,7 @@
 > (§3.3 Individual contribution).
 
 | Member | Primary role | Key responsibilities |
-|---|---|---|---|
+|---|---|---|
 | Team| ML Pipeline | Data ingestion/validation, feature engineering, training + MLflow, Responsible AI (fairness/SHAP) |
 | Team | Serving & Deployment | FastAPI service, Dockerfile/docker-compose, API docs |
 | Team | Monitoring & CI/CD | Prometheus/Grafana, alert rules, GitHub Actions pipeline |
