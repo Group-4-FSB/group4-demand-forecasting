@@ -21,7 +21,7 @@ def isolated_train_settings(monkeypatch, request):
     """Point train.py at a throwaway, per-test-unique model name so tests in
     this file never see each other's registered versions/aliases regardless
     of execution order."""
-    model_name = f"gate-test-{request.node.name}"[:100]
+    model_name = f"{global_settings.mlflow_model_name}-gate-{request.node.name}"[:200]
     isolated = dataclasses.replace(global_settings, mlflow_model_name=model_name)
     monkeypatch.setattr(train_module, "settings", isolated)
     return isolated

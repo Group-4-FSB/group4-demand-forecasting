@@ -160,7 +160,25 @@ docker compose down -v    # also remove volumes (MLflow/Prometheus/Grafana data)
    quick sanity check. See [README.md § Data
    lineage](../README.md#data-lineage).
 
-## 4. Troubleshooting
+## 4. CI -> CD local flow (self-hosted runner)
+
+The repository's deployment flow can run entirely with GitHub + your local
+machine:
+
+1. Push source to GitHub.
+2. CI runs in GitHub Actions (`.github/workflows/ci.yml`).
+3. If CI succeeds on `main`, CD runs on your local self-hosted runner
+   (`.github/workflows/cd-local.yml`) and executes Docker Compose deployment
+   on that same machine.
+
+Full setup and operations checklist:
+
+- [docs/CI_CD_LOCAL.md](CI_CD_LOCAL.md)
+
+This flow is ideal for course/demo delivery when you do not have a separate
+staging server yet.
+
+## 5. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|

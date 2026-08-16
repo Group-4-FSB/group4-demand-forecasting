@@ -21,6 +21,7 @@ Segments used (derived — this dataset ships no store-metadata file):
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from demand_forecast.models.evaluate import evaluate_all
@@ -28,14 +29,51 @@ from demand_forecast.models.evaluate import evaluate_all
 DEFAULT_SEGMENT_COLUMNS = ["store_size_bucket", "unemployment_bucket", "store_nbr"]
 
 
-def add_fairness_segments(df: pd.DataFrame) -> pd.DataFrame:
-    """Derive the segment columns used by `fairness_report` from raw
-    store_nbr/sales/unemployment — call this once before scoring."""
+def add_fairness_segments(
+    df: pd.DataFrame, reference_df: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Derive stable proxy segments for a fairness evaluation table.
+
+    ``reference_df`` should contain only the historical training pool. Its
+    distributions define the bucket boundaries, which are then applied to
+    ``df`` (normally the chronological holdout). This prevents the held-out
+    outcomes from influencing their own group definitions. Passing no
+    reference preserves the convenient exploratory behaviour of deriving
+    segments from ``df`` itself.
+    """
     df = df.copy()
-    store_avg_sales = df.groupby("store_nbr", observed=True)["sales"].transform("mean")
-    df["store_size_bucket"] = pd.qcut(store_avg_sales, q=3, labels=["small", "medium", "large"])
-    df["unemployment_bucket"] = pd.qcut(
-        df["unemployment"], q=4, labels=["Q1_lowest", "Q2", "Q3", "Q4_highest"]
+    reference = df if reference_df is None else reference_df
+
+    # Rank before qcut so equal averages cannot collapse quantile boundaries.
+    # Each store gets equal weight, irrespective of how many weekly rows it has.
+    store_avg_sales = reference.groupby("store_nbr", observed=True)["sales"].mean()
+    if len(store_avg_sales) >= 3:
+        store_buckets = pd.qcut(
+            store_avg_sales.rank(method="first"),
+            q=3,
+            labels=["small", "medium", "large"],
+        ).astype(str)
+    elif len(store_avg_sales) == 2:
+        ordered = store_avg_sales.sort_values().index
+        store_buckets = pd.Series({ordered[0]: "small", ordered[1]: "large"})
+    else:
+        store_buckets = pd.Series("medium", index=store_avg_sales.index)
+    df["store_size_bucket"] = pd.Categorical(
+        df["store_nbr"].map(store_buckets), categories=["small", "medium", "large"]
+    )
+
+    # Define socioeconomic buckets from training-only quartiles. Infinite
+    # outer bounds keep later values outside the historical range classifiable.
+    unemployment_edges = (
+        reference["unemployment"].dropna().quantile([0.25, 0.5, 0.75]).drop_duplicates().to_numpy()
+    )
+    unemployment_values = df["unemployment"].to_numpy(dtype=float)
+    bucket_ids = np.searchsorted(unemployment_edges, unemployment_values, side="right")
+    bucket_labels = np.array(["Q1_lowest", "Q2", "Q3", "Q4_highest"], dtype=object)
+    assigned = bucket_labels[bucket_ids]
+    assigned[pd.isna(unemployment_values)] = None
+    df["unemployment_bucket"] = pd.Categorical(
+        assigned, categories=bucket_labels.tolist(), ordered=True
     )
     return df
 

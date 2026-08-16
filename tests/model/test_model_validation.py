@@ -36,6 +36,12 @@ def test_trained_model_has_honest_holdout_test_metrics(trained_summary):
     # for a fair apples-to-apples comparison against test_metrics.
     assert trained_summary["baseline_test_metrics"]["rmsle"] > 0
 
+    fairness_df = trained_summary["responsible_ai_eval_df"]
+    reference_df = trained_summary["responsible_ai_reference_df"]
+    assert "prediction" in fairness_df
+    assert fairness_df["date"].min() > reference_df["date"].max()
+    assert fairness_df["date"].nunique() == trained_summary["test_weeks"]
+
 
 def test_first_ever_registration_is_always_promoted(trained_summary):
     # trained_summary is this test session's first (and only, per session)
