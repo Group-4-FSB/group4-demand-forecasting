@@ -12,81 +12,33 @@ continuously. A third, small piece — the **scheduler** — bridges them: it
 runs continuously but only *triggers* the offline pipeline, once the
 production model is stale enough.
 
-```mermaid
-flowchart LR
-    subgraph Offline["Offline — Training (batch, on-demand or scheduler-triggered)"]
-        RAW[("Walmart_Sales.csv\ndata/raw")] --> INGEST["Ingest & Normalize\ndata/ingest.py"]
-        INGEST --> VALIDATE["Data Validation\ndata/validate.py"]
-        VALIDATE --> FEAT["Feature Engineering\ndata/features.py"]
-        FEAT --> TRAIN["Train + CV +\nHyperparam Search +\nHeld-out Test Eval\nmodels/train.py"]
-        TRAIN --> GATE{"Quality Gate\ncandidate test_rmsle\nvs current production"}
-        GATE -- "worse: reject" --> REJECT["alias untouched\ntag quality_gate=fail"]
-        GATE -- "better/equal/first: promote" --> FEAT2["Reference Snapshot\ndata/processed"]
-        GATE -- "better/equal/first: promote" --> REPORT["Responsible AI Report\nSHAP + Permutation + Fairness\nreporting.py"]
-    end
-
-    subgraph Scheduler["Scheduler (always-on, checks daily)"]
-        SCHED["retrain_if_stale.py\nproduction model age\n>= RETRAIN_MAX_AGE_DAYS?"]
-    end
-    SCHED -->|"yes: trigger a run"| RAW
-    MLFLOW -->|model registration timestamp| SCHED
-
-    subgraph Registry["MLflow"]
-        MLFLOW[("Tracking Server +\nModel Registry\n(SQLite + artifact store)")]
-    end
-
-    GATE -- promote --> MLFLOW
-    REPORT -->|log artifacts| MLFLOW
-
-    subgraph Online["Online — Serving (always-on)"]
-        CLIENT(["Store Planner /\nClient app"]) -->|HTTPS| API["FastAPI\n/api/v1/predict"]
-        API --> PS["PredictionService\nmodels/predict.py"]
-        PS -->|load model by alias| MLFLOW
-        PS -->|read snapshot\n(read-only volume)| FEAT2
-        API -->|/metrics| PROM[("Prometheus")]
-        PROM --> GRAF["Grafana\nDashboards"]
-        PROM --> ALERTS["Alert Rules"]
-    end
-```
+![Image](docs/images/High-level-system-architecture.png)
 
 ## 2. Component responsibilities
+The system is organized into an offline training pipeline and an online serving stack. The components below show the main offline path from raw CSV to promoted model and report artifacts.
 
-| Component | Responsibility | Key files |
-|---|---|---|
-| **Ingestion** | Load the raw CSV, rename/type columns, sort into a clean weekly panel | [`src/demand_forecast/data/ingest.py`](src/demand_forecast/data/ingest.py) |
-| **Validation** | Schema, null, range, duplicate, and panel-balance checks; fails the pipeline loudly on violation | [`src/demand_forecast/data/validate.py`](src/demand_forecast/data/validate.py) |
-| **Feature engineering** | Calendar features, lag/rolling sales features, rule-based holiday-week detection — applied identically at train and serve time | [`src/demand_forecast/data/features.py`](src/demand_forecast/data/features.py) |
-| **Training** | Baseline model, LightGBM + time-series CV + hyperparameter search, a chronological held-out test evaluation, a promotion **quality gate** (rejects a candidate worse than current `production`), MLflow logging & registry promotion, raw-data fingerprint tagging for lineage (see §5) | [`src/demand_forecast/models/train.py`](src/demand_forecast/models/train.py) |
-| **Retrain scheduler** | Checks the age of the `production` model once a day; forces a retrain attempt (still subject to the quality gate) once it's ≥ `RETRAIN_MAX_AGE_DAYS` (default 7) days old | [`scripts/retrain_if_stale.py`](scripts/retrain_if_stale.py) |
-| **Responsible AI reporting** | Fairness on an untouched chronological holdout with training-derived segment boundaries; SHAP global/local, native gain, and held-out permutation importance | [`src/demand_forecast/explainability/`](src/demand_forecast/explainability/), [`src/demand_forecast/fairness/`](src/demand_forecast/fairness/), [`reporting.py`](src/demand_forecast/reporting.py) |
-| **Serving** | Loads the registered model + reference snapshot, exposes REST endpoints, emits ML-specific metrics | [`src/demand_forecast/api/`](src/demand_forecast/api/) |
-| **Experiment tracking / registry** | Single source of truth for runs, metrics, and the currently-serving model version (via alias `production`) | MLflow service (`Dockerfile.mlflow`) |
-| **Monitoring** | Scrapes API metrics, evaluates alert rules, renders dashboards | `monitoring/prometheus/`, `monitoring/grafana/` |
-| **CI/CD** | Lint → test (≥80% coverage) → Docker build on every push/PR | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| Group | Component | Responsibility | Input | Output |
+|---|---|---|---|---|
+| Offline training pipeline | Data Ingest & Normalize | Load the raw CSV, rename/type columns, and sort into a clean weekly panel | `Walmart_Sales.csv` / `data/raw` | Normalized Data Ingest |
+| Offline training pipeline | Data Validation | Schema, null, range, duplicate, and panel-balance checks; fails the pipeline loudly on violation | Normalized Data Ingest | Validated Dataset |
+| Offline training pipeline | Feature Engineering | Calendar features, lag/rolling sales features, and rule-based holiday-week detection - applied identically at train and serve time | Validated Dataset | Feature Set |
+| Offline training pipeline | Model Training | Executes model training, cross-validation, and hyperparameter optimization | Feature Set | Candidate Model, Training Metrics |
+| Offline training pipeline | Quality Gate | Mandatory gate comparing candidate metrics (e.g., `test_rmsle`) against the current `production` model | Candidate Metrics, MLflow Production Metrics | Decision (Promote/Reject) |
+| Offline training pipeline | Reference Snapshot | Generates and persists a point-in-time snapshot of features used for training | Validated Dataset | Reference Snapshot / `data/processed` |
+| Offline training pipeline | Responsible AI Reporting | Generates explainability (SHAP) and fairness reports for the candidate model | Candidate Model, Feature Set | Responsible AI Report |
+| MLflow Registry | MLflow Tracking | Records metadata from the training stack, including training parameters and metric logs | Metric Logs (Training Stack) | Stored Metadata |
+| MLflow Registry | Model Registry | Manages model versioning and lifecycle stages (Staging, Production) using aliases | Candidate Model, Responsible AI Report | Versioned Models, Registered `Production` Alias |
+| MLflow Registry | Artifact Store (SQLite + DB) | Persists physical model binary files and reports | Model Binaries, `.md` Reports | Persisted Artifacts |
+| Scheduler | Daily Retrain Check | Checks the age of the production model once a day; forces a retrain attempt (still subject to the quality gate) once it's ≥ `RETRAIN_MAX_AGE_DAYS` (default 7) days old | Current Time, MLflow Production Timestamp | Retrain Decision (Yes/No) |
+| Online serving | FastAPI Predictive API | Exposes the `/api/v1/predict` endpoint and manages concurrent HTTP request lifecycle | Client POST Request | HTTP Prediction Response |
+| Online serving | Prediction Service | Encapsulates the core inference logic, loading the model and performing preprocessing | Client Input Data | Raw Prediction |
+| Online serving | Artifact Loader | Hot-loads the `Production` model alias from MLflow and maps reference snapshots as volumes | MLflow Registry (Production alias), Reference Snapshot (Read-Only Volume) | Loaded Model Object, Feature Reference Data |
+| Online serving | Metrics Exporter | Exposes an internal `/metrics` endpoint for Prometheus scraping | Request latency, Prediction distribution | Prometheus compatible Metrics |
+| Monitoring System | Prometheus/Grafana | Provides observability by scraping `/metrics` for system health and model performance dashboards | Metrics Exported by API | Monitoring Dashboards / Alerting Views |
 
 ## 3. Data flow
 
-```mermaid
-flowchart TD
-    A[Walmart_Sales.csv] --> M[load_walmart_sales]
-    M --> V{validate_sales_table}
-    V -- fail --> X[["raise DataValidationError\n(pipeline stops)"]]
-    V -- pass --> F[build_features]
-    F --> SPLIT{chronological_holdout_split}
-    SPLIT -->|pool: all but last N weeks| POOL[Rolling-origin CV\nhyperparameter search]
-    SPLIT -->|test: last N weeks, set aside| TESTWEEKS[held-out test weeks]
-    POOL --> BESTPARAMS[best hyperparameters]
-    BESTPARAMS -->|fit on pool only| EVALMODEL[eval model]
-    TESTWEEKS -->|score once, never trained on| EVALMODEL
-    EVALMODEL --> TESTMETRIC[test_rmsle\nhonest, never-trained-on number]
-    TESTMETRIC --> GATE{quality gate:\ntest_rmsle <= current\nproduction test_rmsle?}
-    GATE -- "no" --> REJECT[["NOT registered\nproduction alias unchanged\ntag quality_gate=fail"]]
-    GATE -- "yes / no prior production" --> REFIT[refit best hyperparameters\non pool + test = 100% of data]
-    REFIT --> FINAL[final model]
-    FINAL --> BEST[registered → aliased 'production']
-    BEST --> SNAP[build_reference_snapshot\nlatest lag/rolling + economic indicators per store]
-    BEST --> RAI[generate_responsible_ai_report]
-```
+![Image](docs/images//DataFlow.png)
 
 Note: `SNAP` and `RAI` only run when the gate promotes — a rejected
 candidate leaves `data/processed/` and `reports/` exactly as they were

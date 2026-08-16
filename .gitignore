@@ -33,10 +33,6 @@ models/*.pkl
 models/*.txt
 !models/.gitkeep
 
-# Generated reports (regenerate via scripts/run_pipeline.py)
-reports/*
-!reports/.gitkeep
-
 # Coverage / test artifacts
 .coverage
 .coverage.*

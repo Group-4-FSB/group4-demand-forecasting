@@ -2,20 +2,19 @@
 
 ## Team roles & responsibilities
 
-> Fill in with your team's actual names/GitHub handles before submission —
-> this table is what the instructor uses (alongside git history) for the
-> ±20% individual contribution adjustment described in the assignment
-> (§3.3 Individual contribution).
+| Member | Roles | Key responsibilities |
+|---|---|---|
+| Lê Thị Kim Chi | Team lead | Project coordination, high-level architecture, deployment flow, presentation organization |
+| Trương Quốc Khánh | Member| Initial codebase,  FastAPI service endpoints, model serving flow, Dockerfile/docker-compose integration |
+| Trương Sỹ Quảng | Member | Data ingestion/validation, feature engineering, fairness/SHAP analysis|
+| Nguyễn Viết Anh Minh | Monitoring, Testing & Documentation | training + MLflow,Prometheus/Grafana setup, alert rules, CI workflow support, test coverage |
 
-| Member | GitHub handle | Primary role | Key responsibilities |
-|---|---|---|---|
-| _Name 1_ | `@handle1` | ML Pipeline | Data ingestion/validation, feature engineering, training + MLflow, Responsible AI (fairness/SHAP) |
-| _Name 2_ | `@handle2` | Serving & Deployment | FastAPI service, Dockerfile/docker-compose, API docs |
-| _Name 3_ | `@handle3` | Monitoring & CI/CD | Prometheus/Grafana, alert rules, GitHub Actions pipeline |
-| _Name 4_ | `@handle4` | Testing & Documentation | Test suite (unit/integration/data/model), README/ARCHITECTURE/USER_GUIDE, presentation deck |
+### Shared team contributions
 
-Each member should also be prepared to answer questions specifically about
-their area in the individual Q&A portion of grading.
+- Build and maintain the end-to-end MLOps workflow (data -> training -> registry -> serving -> monitoring).
+- Review pull requests, improve code quality, and keep commit history meaningful.
+- Coordinate documentation updates, testing activities, and regular group review sessions.
+- Prepare demo materials, validate results, and align deliverables with the assignment rubric.
 
 ## Git workflow
 
@@ -24,6 +23,9 @@ their area in the individual Q&A portion of grading.
   `fix/<short-description>` (e.g. `feature/fairness-report`).
 - Open a pull request into `main`; at least one other team member reviews
   before merging. CI (lint + tests + Docker build) must pass.
+- After merge to `main`, CD runs on the project's local self-hosted GitHub
+  runner (see `docs/CI_CD_LOCAL.md`) and deploys with Docker Compose on the
+  local machine.
 - Prefer small, frequent, meaningful commits over one large commit at the
   end — commit frequency/quality/distribution is part of the individual
   contribution grading criteria.
