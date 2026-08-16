@@ -4,6 +4,8 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,8 +14,8 @@ jobs:
   deploy-local:
     name: Deploy to Local (self-hosted)
     if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_branch == 'main'
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: [self-hosted, macOS]
     steps:
       - name: Checkout source at tested commit
