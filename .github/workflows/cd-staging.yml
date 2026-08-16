@@ -1,0 +1,113 @@
+name: CD Staging
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE_NAME: demand-forecast-api
+  MLFLOW_IMAGE_NAME: demand-forecast-mlflow
+
+jobs:
+  build-and-push:
+    name: Build and Push Images (staging)
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    outputs:
+      api_image: ${{ steps.meta.outputs.api_image }}
+      mlflow_image: ${{ steps.meta.outputs.mlflow_image }}
+    steps:
+      - name: Checkout source at tested commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Compute image names
+        id: meta
+        run: |
+          owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          sha="${{ github.event.workflow_run.head_sha }}"
+          short_sha="${sha:0:12}"
+          echo "api_image=${{ env.REGISTRY }}/${owner_lc}/${{ env.API_IMAGE_NAME }}:staging-${short_sha}" >> "$GITHUB_OUTPUT"
+          echo "mlflow_image=${{ env.REGISTRY }}/${owner_lc}/${{ env.MLFLOW_IMAGE_NAME }}:staging-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.api_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push MLflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.mlflow
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.mlflow_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Staging
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Deploy with docker compose over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          API_IMAGE: ${{ needs.build-and-push.outputs.api_image }}
+          MLFLOW_IMAGE: ${{ needs.build-and-push.outputs.mlflow_image }}
+        with:
+          host: ${{ secrets.STAGING_SSH_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          script_stop: true
+          envs: API_IMAGE,MLFLOW_IMAGE
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.STAGING_APP_DIR }}"
+
+            git fetch --all --tags
+            git checkout main
+            git pull --ff-only origin main
+
+            export API_IMAGE="$API_IMAGE"
+            export MLFLOW_IMAGE="$MLFLOW_IMAGE"
+
+            docker compose pull mlflow api trainer scheduler
+            docker compose up -d --remove-orphans
+
+            for i in $(seq 1 30); do
+              if curl -fsS http://localhost:8000/health >/dev/null; then
+                echo "Staging health check passed"
+                exit 0
+              fi
+              sleep 3
+            done
+            echo "Staging health check failed"
+            exit 1

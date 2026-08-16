@@ -1,5 +1,6 @@
 services:
   mlflow:
+    image: ${MLFLOW_IMAGE:-demand-forecast-mlflow:latest}
     build:
       context: .
       dockerfile: Dockerfile.mlflow
@@ -13,10 +14,10 @@ services:
     restart: unless-stopped
 
   api:
+    image: ${API_IMAGE:-demand-forecast-api:latest}
     build:
       context: .
       dockerfile: Dockerfile
-    image: demand-forecast-api:latest
     container_name: demand-forecast-api
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -43,7 +44,7 @@ services:
   # One-off training runner. Uses the same image as API but with writable
   # mounts so run_pipeline.py can persist reference snapshots and reports.
   trainer:
-    image: demand-forecast-api:latest
+    image: ${API_IMAGE:-demand-forecast-api:latest}
     container_name: demand-forecast-trainer
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -71,7 +72,7 @@ services:
   # quality gate as a manual `run_pipeline.py` run. Reuses the `api` image —
   # no separate Dockerfile needed.
   scheduler:
-    image: demand-forecast-api:latest
+    image: ${API_IMAGE:-demand-forecast-api:latest}
     container_name: demand-forecast-scheduler
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000

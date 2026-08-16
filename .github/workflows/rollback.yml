@@ -1,0 +1,88 @@
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Where to rollback"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - production
+      api_image_tag:
+        description: "API image tag to rollback to (e.g. staging-abc123def456 or v1.2.3)"
+        required: true
+        type: string
+      mlflow_image_tag:
+        description: "MLflow image tag to rollback to"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE_NAME: demand-forecast-api
+  MLFLOW_IMAGE_NAME: demand-forecast-mlflow
+
+jobs:
+  rollback:
+    name: Rollback Stack
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    steps:
+      - name: Build rollback image references
+        id: refs
+        run: |
+          owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          echo "api_image=${{ env.REGISTRY }}/${owner_lc}/${{ env.API_IMAGE_NAME }}:${{ inputs.api_image_tag }}" >> "$GITHUB_OUTPUT"
+          echo "mlflow_image=${{ env.REGISTRY }}/${owner_lc}/${{ env.MLFLOW_IMAGE_NAME }}:${{ inputs.mlflow_image_tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Rollback via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          TARGET_ENV: ${{ inputs.target_environment }}
+          API_IMAGE: ${{ steps.refs.outputs.api_image }}
+          MLFLOW_IMAGE: ${{ steps.refs.outputs.mlflow_image }}
+          STAGING_SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+          STAGING_APP_DIR: ${{ secrets.STAGING_APP_DIR }}
+          PROD_SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          PROD_SSH_USER: ${{ secrets.PROD_SSH_USER }}
+          PROD_SSH_KEY: ${{ secrets.PROD_SSH_KEY }}
+          PROD_APP_DIR: ${{ secrets.PROD_APP_DIR }}
+        with:
+          host: ${{ inputs.target_environment == 'production' && secrets.PROD_SSH_HOST || secrets.STAGING_SSH_HOST }}
+          username: ${{ inputs.target_environment == 'production' && secrets.PROD_SSH_USER || secrets.STAGING_SSH_USER }}
+          key: ${{ inputs.target_environment == 'production' && secrets.PROD_SSH_KEY || secrets.STAGING_SSH_KEY }}
+          script_stop: true
+          envs: TARGET_ENV,API_IMAGE,MLFLOW_IMAGE,STAGING_APP_DIR,PROD_APP_DIR
+          script: |
+            set -euo pipefail
+
+            if [ "$TARGET_ENV" = "production" ]; then
+              APP_DIR="$PROD_APP_DIR"
+            else
+              APP_DIR="$STAGING_APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+            export API_IMAGE="$API_IMAGE"
+            export MLFLOW_IMAGE="$MLFLOW_IMAGE"
+
+            docker compose pull mlflow api trainer scheduler
+            docker compose up -d --remove-orphans
+
+            for i in $(seq 1 40); do
+              if curl -fsS http://localhost:8000/health >/dev/null; then
+                echo "Rollback health check passed"
+                exit 0
+              fi
+              sleep 3
+            done
+            echo "Rollback health check failed"
+            exit 1

@@ -1,0 +1,125 @@
+name: CD Production
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag to deploy (e.g. v1.2.3)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  API_IMAGE_NAME: demand-forecast-api
+  MLFLOW_IMAGE_NAME: demand-forecast-mlflow
+
+jobs:
+  build-and-push:
+    name: Build and Push Images (production)
+    runs-on: ubuntu-latest
+    outputs:
+      api_image: ${{ steps.meta.outputs.api_image }}
+      mlflow_image: ${{ steps.meta.outputs.mlflow_image }}
+      release_tag: ${{ steps.rel.outputs.tag }}
+    steps:
+      - name: Resolve release tag
+        id: rel
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          else
+            tag="${{ inputs.release_tag }}"
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source at release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.rel.outputs.tag }}
+
+      - name: Compute image names
+        id: meta
+        run: |
+          owner_lc="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          tag="${{ steps.rel.outputs.tag }}"
+          echo "api_image=${{ env.REGISTRY }}/${owner_lc}/${{ env.API_IMAGE_NAME }}:${tag}" >> "$GITHUB_OUTPUT"
+          echo "mlflow_image=${{ env.REGISTRY }}/${owner_lc}/${{ env.MLFLOW_IMAGE_NAME }}:${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.api_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push MLflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.mlflow
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.mlflow_image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy to Production
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy with docker compose over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          API_IMAGE: ${{ needs.build-and-push.outputs.api_image }}
+          MLFLOW_IMAGE: ${{ needs.build-and-push.outputs.mlflow_image }}
+          RELEASE_TAG: ${{ needs.build-and-push.outputs.release_tag }}
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          script_stop: true
+          envs: API_IMAGE,MLFLOW_IMAGE,RELEASE_TAG
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.PROD_APP_DIR }}"
+
+            git fetch --all --tags
+            git checkout "$RELEASE_TAG"
+
+            export API_IMAGE="$API_IMAGE"
+            export MLFLOW_IMAGE="$MLFLOW_IMAGE"
+
+            docker compose pull mlflow api trainer scheduler
+            docker compose up -d --remove-orphans
+
+            for i in $(seq 1 40); do
+              if curl -fsS http://localhost:8000/health >/dev/null; then
+                echo "Production health check passed"
+                exit 0
+              fi
+              sleep 3
+            done
+            echo "Production health check failed"
+            exit 1
