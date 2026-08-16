@@ -2,20 +2,19 @@
 
 ## Team roles & responsibilities
 
-> Fill in with your team's actual names/GitHub handles before submission —
-> this table is what the instructor uses (alongside git history) for the
-> ±20% individual contribution adjustment described in the assignment
-> (§3.3 Individual contribution).
-
-| Member | Primary role | Key responsibilities |
+| Member | Roles | Key responsibilities |
 |---|---|---|
-| Team| ML Pipeline | Data ingestion/validation, feature engineering, training + MLflow, Responsible AI (fairness/SHAP) |
-| Team | Serving & Deployment | FastAPI service, Dockerfile/docker-compose, API docs |
-| Team | Monitoring & CI/CD | Prometheus/Grafana, alert rules, GitHub Actions pipeline |
-| Team | Testing & Documentation | Test suite (unit/integration/data/model), README/ARCHITECTURE/USER_GUIDE, presentation deck |
+| Lê Thị Kim Chi | Team lead | Project coordination, high-level architecture, deployment flow, presentation organization |
+| Trương Quốc Khánh | Member| Initial codebase,  FastAPI service endpoints, model serving flow, Dockerfile/docker-compose integration |
+| Trương Sỹ Quảng | Member | Data ingestion/validation, feature engineering, fairness/SHAP analysis|
+| Nguyễn Viết Anh Minh | Monitoring, Testing & Documentation | training + MLflow,Prometheus/Grafana setup, alert rules, CI workflow support, test coverage |
 
-Each member should also be prepared to answer questions specifically about
-their area in the individual Q&A portion of grading.
+### Shared team contributions
+
+- Build and maintain the end-to-end MLOps workflow (data -> training -> registry -> serving -> monitoring).
+- Review pull requests, improve code quality, and keep commit history meaningful.
+- Coordinate documentation updates, testing activities, and regular group review sessions.
+- Prepare demo materials, validate results, and align deliverables with the assignment rubric.
 
 ## Git workflow
 
