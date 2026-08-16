@@ -60,10 +60,11 @@ jobs:
 
           if [ ! -f "data/raw/Walmart_Sales.csv" ]; then
             echo "Raw CSV missing in workspace. Trying setup_data.py..."
+            command -v python3 >/dev/null
             if [ -f "walmart_sales.zip" ]; then
-              python scripts/setup_data.py
+              python3 scripts/setup_data.py
             elif [ -n "${DATASET_ZIP_PATH:-}" ] && [ -f "${DATASET_ZIP_PATH}" ]; then
-              python scripts/setup_data.py --zip "${DATASET_ZIP_PATH}"
+              python3 scripts/setup_data.py --zip "${DATASET_ZIP_PATH}"
             else
               echo "ERROR: Missing data/raw/Walmart_Sales.csv and no dataset zip available." >&2
               echo "Place walmart_sales.zip at repo root, or set secret WALMART_SALES_ZIP_PATH to an absolute zip path on the self-hosted runner machine." >&2
