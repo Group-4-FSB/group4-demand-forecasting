@@ -7,12 +7,12 @@
 > ±20% individual contribution adjustment described in the assignment
 > (§3.3 Individual contribution).
 
-| Member | GitHub handle | Primary role | Key responsibilities |
+| Member | Primary role | Key responsibilities |
 |---|---|---|---|
-| _Name 1_ | `@handle1` | ML Pipeline | Data ingestion/validation, feature engineering, training + MLflow, Responsible AI (fairness/SHAP) |
-| _Name 2_ | `@handle2` | Serving & Deployment | FastAPI service, Dockerfile/docker-compose, API docs |
-| _Name 3_ | `@handle3` | Monitoring & CI/CD | Prometheus/Grafana, alert rules, GitHub Actions pipeline |
-| _Name 4_ | `@handle4` | Testing & Documentation | Test suite (unit/integration/data/model), README/ARCHITECTURE/USER_GUIDE, presentation deck |
+| Team| ML Pipeline | Data ingestion/validation, feature engineering, training + MLflow, Responsible AI (fairness/SHAP) |
+| Team | Serving & Deployment | FastAPI service, Dockerfile/docker-compose, API docs |
+| Team | Monitoring & CI/CD | Prometheus/Grafana, alert rules, GitHub Actions pipeline |
+| Team | Testing & Documentation | Test suite (unit/integration/data/model), README/ARCHITECTURE/USER_GUIDE, presentation deck |
 
 Each member should also be prepared to answer questions specifically about
 their area in the individual Q&A portion of grading.

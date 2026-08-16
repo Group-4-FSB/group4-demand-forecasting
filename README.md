@@ -1,8 +1,7 @@
-# Demand Forecast — DDM501 Final Project
+# Demand Forecasting System — Group 4 - DDM501 Final Project
 
-> End-to-end ML system that forecasts weekly sales per Walmart store, from
-> raw data to a monitored production API. Built for DDM501 — *AI in
-> Production: From Models to Systems*.
+> Weekly store-level sales forecasts for 45 Walmart stores from raw data to a monitored production API
+
 
 <!-- Replace <YOUR_GH_ORG>/<YOUR_GH_REPO> once pushed to GitHub -->
 ![CI](https://github.com/khanhtq2994/group4-demand-forecasting/actions/workflows/ci.yml/badge.svg)
@@ -24,7 +23,7 @@ business problem, requirements, and success metrics, and
 
 ## Quick navigation
 
-- [Overview](#overview)
+- [Overview](docs/PROBLEM_DEFINITION.md)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
 - [Operations](#operations)
@@ -321,65 +320,35 @@ here's how to see them fire in seconds instead of days:
 
 ### Comprehensive system and ML metrics (including custom metrics)
 
-The project tracks metrics across four layers so operational health and model
-quality are both observable.
+The system tracks observability across the serving path, model quality, and governance so that operational health and ML behavior are both visible.
 
-```mermaid
-flowchart LR
-  subgraph Serving[Online Serving Path]
-    Client[Client]
-    API[FastAPI]
-    Model[PredictionService + Model]
-    Client --> API --> Model
-  end
+| Layer | What it tracks | Source |
+|---|---|---|
+| Service availability | API scrape health and container uptime | Prometheus built-in `up{job="demand-forecast-api"}` |
+| HTTP reliability | 5xx error rate and request latency | `prometheus-fastapi-instrumentator` + Prometheus |
+| ML serving behavior | Prediction count, prediction errors, model-only latency, predicted sales distribution | Custom metrics in [`src/demand_forecast/api/metrics.py`](src/demand_forecast/api/metrics.py) |
+| Model readiness | Whether a production model is loaded and serving | `demand_forecast_model_loaded` |
+| Model freshness | Age of the current `production` alias model | `demand_forecast_production_model_age_days` |
+| Offline model quality | Baseline, CV, hold-out RMSLE/MAE/RMSE and quality-gate decision | [`src/demand_forecast/models/train.py`](src/demand_forecast/models/train.py) |
+| Responsible AI | SHAP explainability and segment fairness disparity | [`src/demand_forecast/reporting.py`](src/demand_forecast/reporting.py), [`src/demand_forecast/fairness/fairness_report.py`](src/demand_forecast/fairness/fairness_report.py) |
 
-  subgraph Obs[Observability]
-    Metrics[/metrics endpoint]
-    Prom[Prometheus]
-    Alerts[Alert Rules]
-    Graf[Grafana]
-  end
+**Custom metrics exposed by the API**
 
-  subgraph Train[Offline Training and Governance]
-    Pipeline[Training Pipeline]
-    Eval[Baseline + CV + Held-out Test]
-    Gate[Quality Gate]
-    Fair[Fairness Report]
-    MLflow[MLflow Registry]
-  end
+- `demand_forecast_predictions_total`: successful predictions, labeled by `store_nbr`
+- `demand_forecast_prediction_errors_total`: failed prediction requests, labeled by `reason`
+- `demand_forecast_prediction_latency_seconds`: time spent computing a single model prediction
+- `demand_forecast_predicted_sales`: distribution of predicted sales values
+- `demand_forecast_model_info`: static info about the loaded model (`model_name`, `model_alias`)
+- `demand_forecast_model_loaded`: 1 when the production model is loaded, 0 otherwise
+- `demand_forecast_production_model_age_days`: age of the current `production` model in days
 
-  API --> Metrics --> Prom
-  Prom --> Alerts
-  Prom --> Graf
+**Alerting and dashboards**
 
-  Pipeline --> Eval --> Gate --> MLflow
-  Pipeline --> Fair
-  MLflow -.production alias.-> Model
+- Prometheus scrapes `/metrics` from the API and evaluates the alert rules in [`monitoring/prometheus/alert_rules.yml`](monitoring/prometheus/alert_rules.yml)
+- Grafana reads data from Prometheus via the provisioned datasource in [`monitoring/grafana/provisioning/datasources/datasource.yml`](monitoring/grafana/provisioning/datasources/datasource.yml)
+- The main dashboard is [`monitoring/grafana/dashboards/demand_forecast.json`](monitoring/grafana/dashboards/demand_forecast.json)
 
-  Prom -.monitoring signal.-> Gate
-  Fair -.responsible AI signal.-> Gate
-```
-
-| Layer | Metric | Type | Formula / definition | Threshold / alert | Action when breached |
-|---|---|---|---|---|---|
-| **Service availability** | `up{job="demand-forecast-api"}` | System | API scrape health from Prometheus | `APIDown`: `up == 0` for 1m | Check container/process health, logs, and network |
-| **HTTP reliability** | HTTP 5xx error rate | System | $\frac{\sum rate(http\_requests\_total\{status=~"5.."\}[5m])}{\sum rate(http\_requests\_total[5m])}$ | `HighHTTPErrorRate` > 5% for 5m | Investigate stack traces and dependency failures |
-| **Inference latency (p95)** | `demand_forecast_prediction_latency_seconds` | Custom ML-serving | Model-only latency histogram (excludes HTTP overhead) | `HighPredictionLatencyP95` > 0.5s for 5m | Profile predict path, model load state, and host resources |
-| **Prediction failures** | `demand_forecast_prediction_errors_total{reason=*}` | Custom ML-serving | Failed predictions by reason (e.g., `unknown_store`) | `HighPredictionErrorRate` > 0.5 errors/sec for 5m | Validate request payloads and reference snapshot coverage |
-| **Traffic health** | `demand_forecast_predictions_total{store_nbr=*}` | Custom ML-serving | Successful predictions served | `NoPredictionTraffic` = 0 rate for 15m | Verify upstream integration / client traffic |
-| **Model readiness** | `demand_forecast_model_loaded` | Custom ML-serving | Gauge: 1 if serving model is loaded, else 0 | `ModelNotLoaded` = 0 for 2m | Train/register model and restart API |
-| **Model freshness** | `demand_forecast_production_model_age_days` | Custom governance | Age of current `production` alias model in days | `ProductionModelApproachingStaleness`: 5-7 days; `ProductionModelStale`: >=7 days for 24h | Check scheduler health, retrain outcome, and quality gate rejects |
-| **Primary model quality** | RMSLE | Offline ML | $RMSLE = \sqrt{\frac{1}{n}\sum_i (\log(1+\hat{y}_i)-\log(1+y_i))^2}$ | Compared against baseline and production RMSLE | Promote only if candidate <= current production |
-| **Secondary model quality** | MAE, RMSE | Offline ML | $MAE = \frac{1}{n}\sum_i |\hat{y}_i-y_i|$, $RMSE = \sqrt{\frac{1}{n}\sum_i (\hat{y}_i-y_i)^2}$ | Tracked per run and segment | Diagnose magnitude vs. relative error behavior |
-| **Fairness parity** | Disparity ratio by segment | Custom Responsible AI | $\frac{\max(RMSLE_{segment})}{\min(RMSLE_{segment})}$ across `store_size_bucket`, `unemployment_bucket`, `store_nbr` | Flag when > 1.5 | Open mitigation task (features/weighting), retrain, compare before/after |
-
-Where these are implemented:
-
-- Custom online metrics: `src/demand_forecast/api/metrics.py`
-- Alert logic: `monitoring/prometheus/alert_rules.yml`
-- Offline evaluation metrics: `src/demand_forecast/models/evaluate.py`
-- Quality gate + promotion logic: `src/demand_forecast/models/train.py`
-- Fairness disparity metrics: `src/demand_forecast/fairness/fairness_report.py`
+This setup gives you end-to-end visibility: model quality is validated offline, serving health is observed online, and model staleness is watched through Prometheus/Grafana alerts.
 
 ### What's implemented
 
