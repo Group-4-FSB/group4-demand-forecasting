@@ -23,7 +23,27 @@ This project supports the following flow:
 docker compose up -d --build mlflow api scheduler prometheus grafana
 ```
 
-- Then it checks:
+- Then it checks `/health`. If `model_loaded=false`, it auto-runs bootstrap
+   training and restarts the API:
+
+```bash
+docker compose run --rm trainer python scripts/run_pipeline.py
+docker compose restart api
+```
+
+- Finally it verifies model-ready health and runs a prediction smoke test.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/predict \
+   -H "Content-Type: application/json" \
+   -d '{"store_nbr": 1, "date": "2012-12-28"}'
+```
+
+If bootstrap training is rejected by the quality gate and no production model
+exists yet, the CD job fails by design because the service is not ready to
+serve predictions.
+
+- Initial health endpoint check command:
 
 ```bash
 curl http://localhost:8000/health
@@ -68,9 +88,13 @@ Important:
 - If runner is offline, CD job will remain queued and deployment will not happen.
 - If you need real team-shared staging, use a dedicated server and SSH-based deploy workflow.
 
-## 6. Optional: train and register a model after deployment
+- First-ever deployment can take longer because CD may need to train/register
+   an initial model before prediction smoke tests pass.
 
-CD deploys services only. If no model is currently registered in Dockerized MLflow, API prediction endpoints may return degraded/model-not-loaded status.
+## 6. Manual recovery commands (if you run outside CI/CD)
+
+CD now bootstraps model loading automatically, but these commands are still
+useful for manual operations/troubleshooting.
 
 Run training when needed:
 

@@ -29,15 +29,58 @@ jobs:
           set -euo pipefail
           docker compose up -d --build mlflow api scheduler prometheus grafana
 
-      - name: Health check
+      - name: Wait for API health endpoint
         run: |
           set -euo pipefail
           for i in $(seq 1 30); do
             if curl -fsS http://localhost:8000/health >/dev/null; then
-              echo "Local deploy health check passed"
+              echo "Health endpoint is reachable"
               exit 0
             fi
             sleep 3
           done
-          echo "Local deploy health check failed"
+          echo "API health endpoint did not become reachable"
           exit 1
+
+      - name: Bootstrap model if not loaded
+        run: |
+          set -euo pipefail
+          health_json="$(curl -fsS http://localhost:8000/health)"
+          echo "Initial health payload: ${health_json}"
+          compact_json="$(echo "${health_json}" | tr -d '[:space:]')"
+
+          if echo "${compact_json}" | grep -q '"model_loaded":true'; then
+            echo "A production model is already loaded. Skipping bootstrap training."
+            exit 0
+          fi
+
+          echo "No loaded model detected. Running bootstrap training..."
+          docker compose run --rm trainer python scripts/run_pipeline.py
+          docker compose restart api
+
+      - name: Wait for model-ready health
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 40); do
+            health_json="$(curl -fsS http://localhost:8000/health || true)"
+            compact_json="$(echo "${health_json}" | tr -d '[:space:]')"
+
+            if echo "${compact_json}" | grep -q '"model_loaded":true'; then
+              echo "Model-ready health check passed"
+              exit 0
+            fi
+
+            sleep 3
+          done
+
+          echo "Model did not become loaded after bootstrap/restart"
+          docker compose logs --tail=200 api || true
+          exit 1
+
+      - name: Prediction smoke test
+        run: |
+          set -euo pipefail
+          curl -fsS -X POST http://localhost:8000/api/v1/predict \
+            -H "Content-Type: application/json" \
+            -d '{"store_nbr": 1, "date": "2012-12-28"}' >/dev/null
+          echo "Prediction smoke test passed"
