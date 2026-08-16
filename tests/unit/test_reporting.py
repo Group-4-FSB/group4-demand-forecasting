@@ -11,6 +11,9 @@ def test_generate_responsible_ai_report_writes_expected_artifacts(
         df=features_df,
         feature_cols=trained_summary["feature_columns"],
         output_dir=tmp_path,
+        fairness_evaluation_df=trained_summary["responsible_ai_eval_df"],
+        fairness_reference_df=trained_summary["responsible_ai_reference_df"],
+        fairness_evaluation_model=trained_summary["responsible_ai_eval_model"],
         mlflow_run_id=trained_summary["run_id"],
         shap_sample_size=30,
     )
@@ -18,11 +21,16 @@ def test_generate_responsible_ai_report_writes_expected_artifacts(
     assert result["fairness_report_path"].exists()
     assert result["shap_summary_path"].exists()
     assert result["shap_waterfall_path"].exists()
+    assert result["fairness_metrics_path"].exists()
+    assert result["fairness_summary_path"].exists()
+    assert result["shap_local_example_path"].exists()
+    assert result["permutation_importance_path"].exists()
     assert (tmp_path / "native_gain_importance.csv").exists()
     assert (tmp_path / "shap_top_features.csv").exists()
 
     markdown = result["fairness_report_path"].read_text(encoding="utf-8")
     assert "Fairness Report" in markdown
+    assert "chronological holdout" in markdown
     assert len(result["fairness_report"]) > 0
 
 
@@ -35,6 +43,9 @@ def test_generate_responsible_ai_report_without_mlflow_logging(
         df=features_df,
         feature_cols=trained_summary["feature_columns"],
         output_dir=tmp_path,
+        fairness_evaluation_df=trained_summary["responsible_ai_eval_df"],
+        fairness_reference_df=trained_summary["responsible_ai_reference_df"],
+        fairness_evaluation_model=trained_summary["responsible_ai_eval_model"],
         mlflow_run_id=None,
         shap_sample_size=10,
     )

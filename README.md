@@ -5,7 +5,7 @@
 ![CI](https://github.com/khanhtq2994/group4-demand-forecasting/actions/workflows/ci.yml/badge.svg)
 ![Python](https://img.shields.io/badge/python-%E2%89%A53.10-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Coverage](https://img.shields.io/badge/coverage-%E2%89%A596%25-brightgreen)
+![Coverage](https://img.shields.io/badge/coverage-95%25-brightgreen)
 
 ## Overview
 
