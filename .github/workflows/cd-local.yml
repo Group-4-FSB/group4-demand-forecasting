@@ -21,7 +21,7 @@ jobs:
       - name: Checkout source at tested commit
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
 
       - name: Verify Docker engine
         run: docker info >/dev/null
@@ -45,6 +45,8 @@ jobs:
           exit 1
 
       - name: Bootstrap model if not loaded
+        env:
+          DATASET_ZIP_PATH: ${{ secrets.WALMART_SALES_ZIP_PATH }}
         run: |
           set -euo pipefail
           health_json="$(curl -fsS http://localhost:8000/health)"
@@ -54,6 +56,19 @@ jobs:
           if echo "${compact_json}" | grep -q '"model_loaded":true'; then
             echo "A production model is already loaded. Skipping bootstrap training."
             exit 0
+          fi
+
+          if [ ! -f "data/raw/Walmart_Sales.csv" ]; then
+            echo "Raw CSV missing in workspace. Trying setup_data.py..."
+            if [ -f "walmart_sales.zip" ]; then
+              python scripts/setup_data.py
+            elif [ -n "${DATASET_ZIP_PATH:-}" ] && [ -f "${DATASET_ZIP_PATH}" ]; then
+              python scripts/setup_data.py --zip "${DATASET_ZIP_PATH}"
+            else
+              echo "ERROR: Missing data/raw/Walmart_Sales.csv and no dataset zip available." >&2
+              echo "Place walmart_sales.zip at repo root, or set secret WALMART_SALES_ZIP_PATH to an absolute zip path on the self-hosted runner machine." >&2
+              exit 1
+            fi
           fi
 
           echo "No loaded model detected. Running bootstrap training..."

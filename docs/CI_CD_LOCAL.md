@@ -67,6 +67,9 @@ Important:
 - The runner must stay connected to GitHub.
 - Docker Desktop must be running on your machine.
 - Port 8000 must be free for API health checks.
+- The training dataset must be available for bootstrap training:
+   - preferred: place `walmart_sales.zip` in the repository root on the runner machine, or
+   - set GitHub secret `WALMART_SALES_ZIP_PATH` to an absolute path of that zip on the runner machine.
 
 ## 4. Daily operation (step-by-step)
 
@@ -90,6 +93,9 @@ Important:
 
 - First-ever deployment can take longer because CD may need to train/register
    an initial model before prediction smoke tests pass.
+- If `data/raw/Walmart_Sales.csv` is missing, CD automatically runs
+   `python scripts/setup_data.py` (using repo-root zip or
+   `WALMART_SALES_ZIP_PATH` if provided).
 
 ## 6. Manual recovery commands (if you run outside CI/CD)
 
